@@ -1,0 +1,65 @@
+paths:
+  raw_data: data/raw/
+  processed_data: data/processed/
+  context_data: data/context/
+  splits: data/splits/
+  model_output: outputs/models/
+  results: outputs/results/
+  plots: outputs/plots/
+  explanations: outputs/explanations/
+
+preprocessing:
+  min_encounter_hours: 2 # drop encounters shorter than this
+  max_forward_fill_minutes: 60 # max gap to forward-fill vitals
+
+  vital_features:
+    - heartrate
+    - resprate
+    - o2sat
+    - sbp
+    - dbp
+    - temperature
+    - pain
+
+  # physiological clipping ranges [min, max]
+  vital_clipping_ranges:
+    heartrate: [20, 280]
+    resprate: [4, 60]
+    o2sat: [50, 100]
+    sbp: [40, 260]
+    dbp: [20, 160]
+    temperature: [34, 43]
+    pain: [0, 10]
+
+  # sepsis/infection ICD keywords to flag from diagnosis table
+  sepsis_icd_keywords: [sepsis, infection, pneumonia, bacteremia, cellulitis]
+
+context:
+  window_hours: [1, 3, 6]
+  slope_stable_threshold: 2.0 # Units/hour below = stable
+  slope_fast_threshold: 5.0 # Units/hour above = fast
+  density_high_threshold: 0.70
+  density_low_threshold: 0.30
+  # critical vitals - missing these raises uncertainty
+  critical_missing_features: [sbp, heartrate]
+
+model:
+  hidden_dims: [256, 128, 64]
+  dropout_rate: 0.40
+  mc_dropout_samples: 50
+  learning_rate: 0.001
+  batch_size: 64
+  max_epochs: 100
+  early_stopping_patience: 10
+  uncertainty_thresholds:
+    high: 0.05
+    medium: 0.01
+
+decision:
+  risk_high_threshold: 0.70
+  risk_moderate_threshold: 0.40
+
+evaluation:
+  n_bootstrap: 1000
+  high_missingness_threshold: 0.30
+  cv_folds: 5
