@@ -43,6 +43,44 @@ def derive_outcome_label(edstays: pd.DataFrame) -> pd.DataFrame:
 VITAL_COLS = ["heartrate", "resprate", "o2sat", "sbp", "dbp", "temperature", "pain"]
 
 
+def _coerce_numeric(series: pd.Series, col_name: str, table_name: str) -> pd.Series:
+    """
+    Convert mixed/object/string columns to numeric safely.
+    Extracts the first numeric token from strings (e.g. "98.6 F", "7/10"),
+    then coerces invalid values to NaN.
+    """
+    if pd.api.types.is_numeric_dtype(series):
+        return series
+
+    as_text = series.astype("string")
+    extracted = as_text.str.extract(r"([-+]?\d*\.?\d+)")[0]
+    numeric = pd.to_numeric(extracted, errors="coerce")
+
+    bad_values = series.notna() & numeric.isna()
+    if bad_values.any():
+        log.info(
+            f"{table_name}.{col_name}: coerced {bad_values.sum()} non-numeric values to NaN"
+        )
+    return numeric
+
+
+def _normalize_temperature_celsius(
+    series: pd.Series, table_name: str
+) -> pd.Series:
+    """
+    Convert likely Fahrenheit temperatures to Celsius.
+    Heuristic: values > 60 are treated as Fahrenheit (impossible physiologic Celsius).
+    """
+    is_fahrenheit = series.notna() & (series > 60)
+    if is_fahrenheit.any():
+        log.info(
+            f"{table_name}.temperature: converting {is_fahrenheit.sum()} values from Fahrenheit to Celsius"
+        )
+        series = series.copy()
+        series.loc[is_fahrenheit] = (series.loc[is_fahrenheit] - 32) * (5.0 / 9.0)
+    return series
+
+
 def clean_vitalsign(vitals: pd.DataFrame, edstays: pd.DataFrame) -> pd.DataFrame:
 
     cfg = get_config()
@@ -54,6 +92,9 @@ def clean_vitalsign(vitals: pd.DataFrame, edstays: pd.DataFrame) -> pd.DataFrame
 
     for col in VITAL_COLS:
         if col in vitals.columns and col in ranges:
+            vitals[col] = _coerce_numeric(vitals[col], col, "vitalsign")
+            if col == "temperature":
+                vitals[col] = _normalize_temperature_celsius(vitals[col], "vitalsign")
             lo, hi = ranges[col]
             out_of_range = ((vitals[col] < lo) | (vitals[col] > hi)) & vitals[
                 col
@@ -85,8 +126,7 @@ def clean_triage(triage: pd.DataFrame, valid_stay_ids: set) -> pd.DataFrame:
     """
     triage = triage[triage["stay_id"].isin(valid_stay_ids)].copy()
 
-    triage["acuity"] = triage["acuity"].clip(1, 5)
-
+    triage["acuity"] = pd.to_numeric(triage["acuity"], errors="coerce").clip(1, 5)
     triage["acuity"] = triage["acuity"].fillna(3.0)
 
     triage["chiefcomplaint"] = (
@@ -97,6 +137,9 @@ def clean_triage(triage: pd.DataFrame, valid_stay_ids: set) -> pd.DataFrame:
     ranges = cfg["preprocessing"]["vital_clipping_ranges"]
     for col in VITAL_COLS:
         if col in triage.columns and col in ranges:
+            triage[col] = _coerce_numeric(triage[col], col, "triage")
+            if col == "temperature":
+                triage[col] = _normalize_temperature_celsius(triage[col], "triage")
             lo, hi = ranges[col]
             triage[col] = triage[col].clip(lo, hi)
 
