@@ -12,13 +12,6 @@ VITAL_FEATURES = cfg["preprocessing"]["vital_features"]
 def build_windows_for_patient(
     stay_id: str, vitals_df, window_size_min: int = 60
 ) -> List[TimeWindow]:
-    """
-    Build sequential time windows for one patient encounter.
-
-    Each window covers window_size_min minutes.
-    Windows are non-overlapping and chronological.
-    Returns a list of TimeWindow objects.
-    """
     if len(vitals_df) == 0:
         return []
 
@@ -58,15 +51,6 @@ def build_windows_for_patient(
 
 
 def aggregate_vital_window(window_rows) -> Tuple[Dict[str, float], Dict[str, int]]:
-    """
-    For each vital feature in this window,:
-      {feature}_mean  — mean of all observations
-      {feature}_last  — most recent observation (last charttime row)
-      {feature}_min   — minimum
-      {feature}_max   — maximum
-
-    Missingness mask: 1 if at least one non-NaN value exists, 0 otherwise.
-    """
     features = {}
     mask = {}
 
@@ -93,7 +77,6 @@ def aggregate_vital_window(window_rows) -> Tuple[Dict[str, float], Dict[str, int
 
 
 def compute_density(mask: Dict[str, int]) -> float:
-    """Fraction of vital features observed (not missing) in this window."""
     if not mask:
         return 0.0
     return float(sum(mask.values())) / len(mask)
@@ -102,11 +85,6 @@ def compute_density(mask: Dict[str, int]) -> float:
 def build_rolling_window_features(
     vitals_df, current_t_min: float, horizon_hours: int
 ) -> Tuple[Dict[str, float], Dict[str, int]]:
-    """
-    Build features for a ROLLING window ending at current_t_min,
-    looking back horizon_hours into the past.
-    Used by the context layer to build multi-scale trend features.
-    """
     start = current_t_min - (horizon_hours * 60)
     window_rows = vitals_df[
         (vitals_df["t_minutes"] >= start) & (vitals_df["t_minutes"] <= current_t_min)

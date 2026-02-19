@@ -4,7 +4,7 @@ from src.utils.schema import TimeWindow
 
 cfg = get_config()
 CRITICAL = cfg["context"]["critical_missing_features"]
-# = ['sbp', 'heartrate'] — the two most critical vitals
+# = ['sbp', 'heartrate']-two most critical vitals
 
 
 def get_missing_critical_features(window: TimeWindow) -> List[str]:

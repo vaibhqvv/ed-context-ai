@@ -25,8 +25,7 @@ def derive_outcome_label(edstays: pd.DataFrame) -> pd.DataFrame:
     MIMIC-IV-ED outcome strategy:
     - hadm_id NOT null -> patient admitted to hospital -> outcome_binary = 1
     - hadm_id IS null  -> patient discharged home     -> outcome_binary = 0
-
-    This is the most reliable and commonly used labeling approach for MIMIC-IV-ED.
+    common and reliable approach
     """
     edstays = edstays.copy()
     edstays["outcome_binary"] = edstays["hadm_id"].notna().astype(int)
@@ -44,11 +43,6 @@ VITAL_COLS = ["heartrate", "resprate", "o2sat", "sbp", "dbp", "temperature", "pa
 
 
 def _coerce_numeric(series: pd.Series, col_name: str, table_name: str) -> pd.Series:
-    """
-    Convert mixed/object/string columns to numeric safely.
-    Extracts the first numeric token from strings (e.g. "98.6 F", "7/10"),
-    then coerces invalid values to NaN.
-    """
     if pd.api.types.is_numeric_dtype(series):
         return series
 
@@ -64,13 +58,7 @@ def _coerce_numeric(series: pd.Series, col_name: str, table_name: str) -> pd.Ser
     return numeric
 
 
-def _normalize_temperature_celsius(
-    series: pd.Series, table_name: str
-) -> pd.Series:
-    """
-    Convert likely Fahrenheit temperatures to Celsius.
-    Heuristic: values > 60 are treated as Fahrenheit (impossible physiologic Celsius).
-    """
+def _normalize_temperature_celsius(series: pd.Series, table_name: str) -> pd.Series:
     is_fahrenheit = series.notna() & (series > 60)
     if is_fahrenheit.any():
         log.info(
@@ -120,10 +108,6 @@ def clean_vitalsign(vitals: pd.DataFrame, edstays: pd.DataFrame) -> pd.DataFrame
 
 
 def clean_triage(triage: pd.DataFrame, valid_stay_ids: set) -> pd.DataFrame:
-    """
-    Fill missing acuity with 3 (middle severity — conservative default).
-    Fill missing chiefcomplaint with empty string.
-    """
     triage = triage[triage["stay_id"].isin(valid_stay_ids)].copy()
 
     triage["acuity"] = pd.to_numeric(triage["acuity"], errors="coerce").clip(1, 5)

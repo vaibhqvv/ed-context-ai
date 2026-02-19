@@ -144,7 +144,6 @@ def run_preprocessing() -> list:
         f"Done: {len(records)} records | {n_no_vitals} skipped (no vitals) | {n_failed} errors"
     )
 
-    # Statistics
     n_admitted = sum(r.outcome_binary for r in records)
     n_discharged = len(records) - n_admitted
     avg_windows = sum(len(r.time_windows) for r in records) / max(len(records), 1)
@@ -168,10 +167,6 @@ def run_preprocessing() -> list:
 
 
 def _save_splits(records: list, train=0.70, val=0.15, test=0.15):
-    """
-    Split by unique patient (subject_id) — NOT by stay — to prevent
-    data leakage (same patient appearing in train and test).
-    """
     import random
 
     split_path = Path(cfg["paths"]["splits"])

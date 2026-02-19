@@ -31,7 +31,6 @@ preprocessing:
     temperature: [34, 43]
     pain: [0, 10]
 
-  # sepsis/infection ICD keywords to flag from diagnosis table
   sepsis_icd_keywords: [sepsis, infection, pneumonia, bacteremia, cellulitis]
 
 context:
@@ -44,6 +43,7 @@ context:
   critical_missing_features: [sbp, heartrate]
 
 model:
+  input_dim: 63
   hidden_dims: [256, 128, 64]
   dropout_rate: 0.40
   mc_dropout_samples: 50

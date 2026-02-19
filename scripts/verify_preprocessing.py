@@ -19,26 +19,21 @@ def verify():
 
     print(f"Total records:        {len(records)}")
 
-    # Outcome distribution
     outcomes = Counter(r.outcome_binary for r in records)
     print(f"Discharged (0):       {outcomes[0]} ({outcomes[0]/len(records):.1%})")
     print(f"Admitted   (1):       {outcomes[1]} ({outcomes[1]/len(records):.1%})")
 
-    # Window distribution
     n_windows = [len(r.time_windows) for r in records]
     print(f"Avg windows/patient:  {sum(n_windows)/len(n_windows):.1f}")
     print(f"Max windows:          {max(n_windows)}")
     print(f"Min windows:          {min(n_windows)}")
 
-    # Acuity distribution
     acuities = Counter(r.acuity for r in records)
     print(f"Acuity distribution:  {dict(sorted(acuities.items()))}")
 
-    # Sepsis flags
     n_sepsis = sum(r.sepsis_flag for r in records)
     print(f"Sepsis flagged:       {n_sepsis} ({n_sepsis/len(records):.1%})")
 
-    # Missingness check
     from src.utils.schema import VITAL_FEATURES
 
     feature_density = {f: 0.0 for f in VITAL_FEATURES}
@@ -54,7 +49,6 @@ def verify():
         flag = " ⚠" if rate < 0.5 else ""
         print(f"  {f:15s}: {rate:.1%}{flag}")
 
-    # NaN check in context vectors (just triage vitals)
     nan_triage = sum(
         1
         for r in records
@@ -65,7 +59,6 @@ def verify():
     )
     print("(NaNs in triage are expected — handled by context layer)")
 
-    # Sample record
     print("\n── Sample Record ──────────────────────────────")
     r = records[0]
     print(f"  stay_id:       {r.stay_id}")
