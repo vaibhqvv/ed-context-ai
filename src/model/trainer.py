@@ -5,6 +5,7 @@ from src.model.mc_dropout import MCDropoutNet
 from src.model.dataset import EDContextDataset, load_label_map
 from src.utils.config_loader import get_config
 from src.utils.logger import get_logger
+from src.utils.device import get_device
 
 log = get_logger(__name__)
 cfg = get_config()
@@ -12,6 +13,7 @@ cfg = get_config()
 
 def train():
     log.info("=== Training MC Dropout Model ===")
+    device = get_device()
     with open(Path(cfg["paths"]["context_data"]) / "context_objects.pkl", "rb") as f:
         contexts = pickle.load(f)
     label_map = load_label_map()
@@ -29,7 +31,7 @@ def train():
     )
     val_loader = DataLoader(val_ds, batch_size=256)
 
-    model = MCDropoutNet(input_dim=input_dim)
+    model = MCDropoutNet(input_dim=input_dim).to(device)
     optimizer = torch.optim.Adam(
         model.parameters(), lr=cfg["model"]["learning_rate"], weight_decay=1e-4
     )
@@ -54,6 +56,7 @@ def train():
         model.train()
         t_losses = []
         for X, y in train_loader:
+            X, y = X.to(device), y.to(device)
             optimizer.zero_grad()
             loss = criterion(model(X), y)
             loss.backward()
@@ -65,6 +68,7 @@ def train():
         v_losses = []
         with torch.no_grad():
             for X, y in val_loader:
+                X, y = X.to(device), y.to(device)
                 v_losses.append(criterion(model(X), y).item())
 
         v_loss = np.mean(v_losses)
@@ -78,9 +82,10 @@ def train():
             best_loss = v_loss
             patience_ctr = 0
             torch.save(
-                {"model_state": model.state_dict(), "input_dim": input_dim},
+                {"model_state": model.cpu().state_dict(), "input_dim": input_dim},
                 save_path / "best_model.pt",
             )
+            model.to(device)  # move back to GPU after saving
         else:
             patience_ctr += 1
             if patience_ctr >= patience:

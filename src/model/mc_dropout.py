@@ -24,7 +24,11 @@ class MCDropoutNet(nn.Module):
 
     def predict_with_uncertainty(self, x, n_samples=None):
         n = n_samples or cfg["model"]["mc_dropout_samples"]
-        self.train()
+        self.eval()
+        # Enable only dropout layers for MC sampling (keep BatchNorm in eval)
+        for m in self.modules():
+            if isinstance(m, torch.nn.Dropout):
+                m.train()
         with torch.no_grad():
             preds = torch.stack([self.forward(x) for _ in range(n)], dim=0)
         return preds.mean(0), preds.var(0), preds

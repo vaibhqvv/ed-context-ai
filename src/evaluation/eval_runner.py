@@ -24,6 +24,7 @@ def run_evaluation():
     label_map = load_label_map()
     model = load_model()
 
+    device = next(model.parameters()).device
     y_true, y_prob, y_unc = [], [], []
     for ctx in ctxs:
         label = label_map.get(ctx.patient_id)
@@ -31,7 +32,7 @@ def run_evaluation():
             continue
         if any(np.isnan(v) for v in ctx.context_vector):
             continue
-        x = torch.tensor(np.array(ctx.context_vector, dtype=np.float32)).unsqueeze(0)
+        x = torch.tensor(np.array(ctx.context_vector, dtype=np.float32)).unsqueeze(0).to(device)
         mean, var, _ = model.predict_with_uncertainty(x)
         y_true.append(float(label))
         y_prob.append(float(mean.item()))
