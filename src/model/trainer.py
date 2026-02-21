@@ -16,6 +16,9 @@ cfg = get_config()
 def train():
     log.info("=== Training MC Dropout Model ===")
     device = get_device()
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision("high")  # TF32 on Ampere+ GPUs
     pkl_path = Path(cfg["paths"]["context_data"]) / "context_objects.pkl"
     file_size = pkl_path.stat().st_size
     log.info(f"Loading context objects ({file_size / 1e6:.0f} MB)...")
@@ -56,7 +59,7 @@ def train():
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=256,
+        batch_size=cfg["model"]["batch_size"] * 2,
         num_workers=n_workers,
         pin_memory=(device.type == "cuda"),
         persistent_workers=(n_workers > 0),
