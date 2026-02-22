@@ -26,6 +26,7 @@ def run_full_pipeline(context) -> SystemOutput:
     )
     return SystemOutput(
         patient_id=context.patient_id,
+        stay_id=context.stay_id,
         window_index=context.window_index,
         risk_probability=risk,
         uncertainty_score=unc,
