@@ -1,4 +1,4 @@
-import os
+import gc, os
 import torch, numpy as np, pickle
 from pathlib import Path
 from torch.utils.data import DataLoader, random_split
@@ -19,12 +19,13 @@ def train():
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
         torch.set_float32_matmul_precision("high")  # TF32 on Ampere+ GPUs
+
+    # --- Load data and build dataset, then free raw objects ---
     pkl_path = Path(cfg["paths"]["context_data"]) / "context_objects.pkl"
     file_size = pkl_path.stat().st_size
     log.info(f"Loading context objects ({file_size / 1e6:.0f} MB)...")
     with open(pkl_path, "rb") as f:
         with tqdm(total=file_size, unit="B", unit_scale=True, desc="Loading pkl") as pbar:
-            # Wrap file so tqdm tracks bytes read by pickle
             class _TrackedReader:
                 def __init__(self, fh, pbar):
                     self._fh, self._pbar = fh, pbar
@@ -37,8 +38,14 @@ def train():
                     self._pbar.update(len(line))
                     return line
             contexts = pickle.load(_TrackedReader(f, pbar))
+
     label_map = load_label_map()
     dataset = EDContextDataset(contexts, label_map)
+
+    # Free the raw context objects and label map — dataset now holds compact tensors
+    del contexts, label_map
+    gc.collect()
+
     log.info(f"Dataset: {len(dataset)} samples")
 
     x0, _ = dataset[0]
@@ -47,7 +54,7 @@ def train():
     log.info(f"Input dim: {input_dim}")
     val_size = int(0.2 * len(dataset))
     train_ds, val_ds = random_split(dataset, [len(dataset) - val_size, val_size])
-    n_workers = min(os.cpu_count() or 1, 8)
+    n_workers = min(os.cpu_count() or 1, 2)
     log.info(f"DataLoader workers: {n_workers}")
     train_loader = DataLoader(
         train_ds,
@@ -75,9 +82,8 @@ def train():
     criterion = torch.nn.BCELoss()
 
     # Compute class weight for imbalanced labels
-    labels = [s[1] for s in dataset.samples]
-    n_pos = sum(labels)
-    n_neg = len(labels) - n_pos
+    n_pos = int(dataset.y.sum().item())
+    n_neg = len(dataset) - n_pos
     log.info(f"Class balance: pos={int(n_pos)}, neg={int(n_neg)}")
 
     best_loss = float("inf")
