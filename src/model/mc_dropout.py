@@ -16,10 +16,11 @@ class MCDropoutNet(nn.Module):
         for h in hidden_dims:
             layers += [nn.Linear(in_d, h), nn.BatchNorm1d(h), nn.ReLU(), nn.Dropout(p)]
             in_d = h
-        layers += [nn.Linear(in_d, 1), nn.Sigmoid()]
+        layers += [nn.Linear(in_d, 1)]
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
+        """Return raw logits (used by BCEWithLogitsLoss during training)."""
         return self.net(x).squeeze(-1)
 
     def predict_with_uncertainty(self, x, n_samples=None):
@@ -30,7 +31,8 @@ class MCDropoutNet(nn.Module):
             if isinstance(m, torch.nn.Dropout):
                 m.train()
         with torch.no_grad():
-            preds = torch.stack([self.forward(x) for _ in range(n)], dim=0)
+            logits = torch.stack([self.forward(x) for _ in range(n)], dim=0)
+            preds = torch.sigmoid(logits)
         return preds.mean(0), preds.var(0), preds
 
     def classify_uncertainty(self, variance):

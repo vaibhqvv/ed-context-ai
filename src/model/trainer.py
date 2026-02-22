@@ -77,12 +77,13 @@ def train():
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=5, factor=0.5
     )
-    criterion = torch.nn.BCELoss()
-
     # Compute class weight for imbalanced labels
     n_pos = int(dataset.y.sum().item())
     n_neg = len(dataset) - n_pos
     log.info(f"Class balance: pos={int(n_pos)}, neg={int(n_neg)}")
+    pos_weight = torch.tensor([n_neg / n_pos], device=device)
+    log.info(f"pos_weight: {pos_weight.item():.2f}")
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     best_loss = float("inf")
     patience_ctr = 0
