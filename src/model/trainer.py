@@ -124,7 +124,7 @@ def train():
         model = MCDropoutNet(input_dim=input_dim).to(device)
 
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=cfg["model"]["learning_rate"], weight_decay=1e-2
+        model.parameters(), lr=cfg["model"]["learning_rate"], weight_decay=5e-3
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=5, min_lr=1e-6

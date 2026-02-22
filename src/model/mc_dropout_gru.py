@@ -21,6 +21,8 @@ class MCDropoutGRU(nn.Module):
             batch_first=True,
             dropout=p if num_layers > 1 else 0.0,
         )
+        # Attention pooling over timesteps
+        self.attn_w = nn.Linear(hidden_dim, 1, bias=False)
         self.layer_norm = nn.LayerNorm(hidden_dim)
         self.head = nn.Sequential(
             nn.Dropout(p),
@@ -29,6 +31,22 @@ class MCDropoutGRU(nn.Module):
             nn.Dropout(p),
             nn.Linear(32, 1),
         )
+
+    def _attend(self, output, lengths=None):
+        """Attention-weighted pooling over timesteps.
+
+        Args:
+            output: (batch, seq_len, hidden_dim)
+            lengths: (batch,) or None
+        Returns:
+            (batch, hidden_dim)
+        """
+        scores = self.attn_w(output).squeeze(-1)  # (batch, seq_len)
+        if lengths is not None:
+            mask = torch.arange(output.size(1), device=output.device).unsqueeze(0) >= lengths.unsqueeze(1)
+            scores = scores.masked_fill(mask, float("-inf"))
+        weights = torch.softmax(scores, dim=-1).unsqueeze(-1)  # (batch, seq_len, 1)
+        return (output * weights).sum(dim=1)  # (batch, hidden_dim)
 
     def forward(self, x, lengths=None):
         """Return raw logits.
@@ -41,19 +59,19 @@ class MCDropoutGRU(nn.Module):
             packed = pack_padded_sequence(
                 x, lengths.cpu(), batch_first=True, enforce_sorted=False
             )
-            _, h_n = self.gru(packed)
+            output, _ = self.gru(packed)
+            output, _ = pad_packed_sequence(output, batch_first=True)
         else:
-            _, h_n = self.gru(x)
+            output, _ = self.gru(x)
 
-        # h_n: (num_layers, batch, hidden) — take the last layer
-        last_hidden = h_n[-1]  # (batch, hidden)
-        last_hidden = self.layer_norm(last_hidden)
-        return self.head(last_hidden).squeeze(-1)
+        context = self._attend(output, lengths)
+        context = self.layer_norm(context)
+        return self.head(context).squeeze(-1)
 
     def predict_with_uncertainty(self, x, n_samples=None, lengths=None):
         n = n_samples or cfg["model"]["mc_dropout_samples"]
         self.eval()
-        # Enable only dropout layers for MC sampling (keep GRU/BN in eval)
+        # Enable only dropout layers for MC sampling (keep GRU/LayerNorm in eval)
         for m in self.modules():
             if isinstance(m, nn.Dropout):
                 m.train()
