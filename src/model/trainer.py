@@ -1,7 +1,7 @@
 import gc, os
 import torch, numpy as np, pickle
 from pathlib import Path
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 from src.model.mc_dropout import MCDropoutNet
 from src.model.dataset import EDContextDataset, load_label_map
@@ -48,18 +48,30 @@ def train():
 
     log.info(f"Dataset: {len(dataset)} samples")
 
-    # Standardize features (zero mean, unit variance)
-    mean = dataset.X.mean(dim=0)
-    std = dataset.X.std(dim=0)
-    std[std < 1e-8] = 1.0  # avoid division by zero for constant features
-    dataset.X = (dataset.X - mean) / std
-    log.info("Standardized input features (mean=0, std=1)")
-
     input_dim = dataset.X.shape[1]
     cfg["model"]["input_dim"] = input_dim
     log.info(f"Input dim: {input_dim}")
-    val_size = int(0.2 * len(dataset))
-    train_ds, val_ds = random_split(dataset, [len(dataset) - val_size, val_size])
+
+    # Patient-level split to prevent data leakage
+    unique_pids = list(set(dataset.patient_ids))
+    np.random.seed(42)
+    np.random.shuffle(unique_pids)
+    val_count = int(0.2 * len(unique_pids))
+    val_pids = set(unique_pids[:val_count])
+    train_idx = [i for i, pid in enumerate(dataset.patient_ids) if pid not in val_pids]
+    val_idx = [i for i, pid in enumerate(dataset.patient_ids) if pid in val_pids]
+    log.info(f"Patient-level split: {len(unique_pids)-val_count} train / {val_count} val patients")
+
+    # Standardize using train statistics only (no val leakage)
+    train_idx_t = torch.tensor(train_idx, dtype=torch.long, device=dataset.X.device)
+    mean = dataset.X[train_idx_t].mean(dim=0)
+    std = dataset.X[train_idx_t].std(dim=0)
+    std[std < 1e-8] = 1.0  # avoid division by zero for constant features
+    del train_idx_t
+    dataset.X = (dataset.X - mean) / std
+    log.info("Standardized input features (train stats only)")
+
+    train_ds, val_ds = Subset(dataset, train_idx), Subset(dataset, val_idx)
 
     # Data is already on GPU — no need for workers or pin_memory
     on_gpu = device.type == "cuda"
@@ -84,10 +96,11 @@ def train():
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, patience=5, factor=0.5
     )
-    # Compute class weight for imbalanced labels
-    n_pos = int(dataset.y.sum().item())
-    n_neg = len(dataset) - n_pos
-    log.info(f"Class balance: pos={int(n_pos)}, neg={int(n_neg)}")
+    # Compute class weight from training set
+    train_labels = dataset.y[train_idx]
+    n_pos = int(train_labels.sum().item())
+    n_neg = len(train_idx) - n_pos
+    log.info(f"Train class balance: pos={n_pos}, neg={n_neg}")
     pos_weight = torch.tensor([n_neg / n_pos], device=device)
     log.info(f"pos_weight: {pos_weight.item():.2f}")
     train_criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
