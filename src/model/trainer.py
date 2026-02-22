@@ -90,11 +90,11 @@ def train():
     )
 
     model = MCDropoutNet(input_dim=input_dim).to(device)
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=cfg["model"]["learning_rate"], weight_decay=1e-4
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=cfg["model"]["learning_rate"], weight_decay=1e-5
     )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=5, factor=0.5
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cfg["model"]["max_epochs"], eta_min=1e-5
     )
     # Compute class weight from training set
     train_labels = dataset.y[train_idx]
@@ -132,7 +132,7 @@ def train():
                 v_losses.append(val_criterion(model(X), y).item())
 
         v_loss = np.mean(v_losses)
-        scheduler.step(v_loss)
+        scheduler.step()
         if epoch % 10 == 0:
             log.info(
                 f"Epoch {epoch:3d} | Train(w): {np.mean(t_losses):.4f} | Val: {v_loss:.4f}"
