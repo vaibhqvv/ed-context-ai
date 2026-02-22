@@ -21,12 +21,13 @@ class MCDropoutGRU(nn.Module):
             batch_first=True,
             dropout=p if num_layers > 1 else 0.0,
         )
+        self.layer_norm = nn.LayerNorm(hidden_dim)
         self.head = nn.Sequential(
             nn.Dropout(p),
-            nn.Linear(hidden_dim, 64),
+            nn.Linear(hidden_dim, 32),
             nn.ReLU(),
             nn.Dropout(p),
-            nn.Linear(64, 1),
+            nn.Linear(32, 1),
         )
 
     def forward(self, x, lengths=None):
@@ -46,6 +47,7 @@ class MCDropoutGRU(nn.Module):
 
         # h_n: (num_layers, batch, hidden) — take the last layer
         last_hidden = h_n[-1]  # (batch, hidden)
+        last_hidden = self.layer_norm(last_hidden)
         return self.head(last_hidden).squeeze(-1)
 
     def predict_with_uncertainty(self, x, n_samples=None, lengths=None):

@@ -124,10 +124,10 @@ def train():
         model = MCDropoutNet(input_dim=input_dim).to(device)
 
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=cfg["model"]["learning_rate"], weight_decay=1e-3
+        model.parameters(), lr=cfg["model"]["learning_rate"], weight_decay=1e-2
     )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=cfg["model"]["max_epochs"], eta_min=1e-5
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=5, min_lr=1e-6
     )
 
     # --- Class balance ---
@@ -193,7 +193,7 @@ def train():
         val_auroc = roc_auc_score(all_labels, val_probs)
         val_auprc = average_precision_score(all_labels, val_probs)
 
-        scheduler.step()
+        scheduler.step(val_auroc)
         if epoch % 10 == 0:
             log.info(
                 f"Epoch {epoch:3d} | Train(w): {np.mean(t_losses):.4f} | Val: {v_loss:.4f}"
