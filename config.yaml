@@ -43,6 +43,7 @@ context:
   critical_missing_features: [sbp, heartrate]
 
 model:
+  model_type: "gru"        # "mlp" or "gru"
   input_dim: 63
   hidden_dims: [256, 128, 64]
   dropout_rate: 0.30
@@ -51,6 +52,8 @@ model:
   batch_size: 512
   max_epochs: 200
   early_stopping_patience: 20
+  gru_hidden_dim: 128
+  gru_num_layers: 2
   uncertainty_thresholds:
     high: 0.05
     medium: 0.01
