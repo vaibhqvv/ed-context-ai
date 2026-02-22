@@ -8,7 +8,8 @@ cfg = get_config()
 
 class EDContextDataset(Dataset):
     def __init__(self, context_objects, patient_label_map, device=None):
-        vecs, labels, patient_ids = [], [], []
+        # Group by (patient_id, stay_id) and keep only last window per stay
+        best = {}  # (patient_id, stay_id) -> (window_index, vec, label)
         for ctx in context_objects:
             label = patient_label_map.get(ctx.patient_id)
             if label is None:
@@ -16,9 +17,16 @@ class EDContextDataset(Dataset):
             vec = ctx.context_vector
             if any(np.isnan(v) for v in vec):
                 continue
+            key = (ctx.patient_id, ctx.stay_id)
+            if key not in best or ctx.window_index > best[key][0]:
+                best[key] = (ctx.window_index, vec, label)
+
+        vecs, labels, patient_ids = [], [], []
+        for (pid, _sid), (_widx, vec, label) in best.items():
             vecs.append(vec)
             labels.append(label)
-            patient_ids.append(ctx.patient_id)
+            patient_ids.append(pid)
+
         self.X = torch.tensor(vecs, dtype=torch.float32)
         self.y = torch.tensor(labels, dtype=torch.float32)
         self.patient_ids = patient_ids
