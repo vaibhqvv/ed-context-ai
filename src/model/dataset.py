@@ -7,7 +7,7 @@ cfg = get_config()
 
 
 class EDContextDataset(Dataset):
-    def __init__(self, context_objects, patient_label_map):
+    def __init__(self, context_objects, patient_label_map, device=None):
         vecs, labels = [], []
         for ctx in context_objects:
             label = patient_label_map.get(ctx.patient_id)
@@ -20,6 +20,9 @@ class EDContextDataset(Dataset):
             labels.append(label)
         self.X = torch.tensor(vecs, dtype=torch.float32)
         self.y = torch.tensor(labels, dtype=torch.float32)
+        if device is not None:
+            self.X = self.X.to(device)
+            self.y = self.y.to(device)
 
     def __len__(self):
         return len(self.y)

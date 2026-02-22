@@ -40,7 +40,7 @@ def train():
             contexts = pickle.load(_TrackedReader(f, pbar))
 
     label_map = load_label_map()
-    dataset = EDContextDataset(contexts, label_map)
+    dataset = EDContextDataset(contexts, label_map, device=device)
 
     # Free the raw context objects and label map — dataset now holds compact tensors
     del contexts, label_map
@@ -48,28 +48,26 @@ def train():
 
     log.info(f"Dataset: {len(dataset)} samples")
 
-    x0, _ = dataset[0]
-    input_dim = len(x0)
+    input_dim = dataset.X.shape[1]
     cfg["model"]["input_dim"] = input_dim
     log.info(f"Input dim: {input_dim}")
     val_size = int(0.2 * len(dataset))
     train_ds, val_ds = random_split(dataset, [len(dataset) - val_size, val_size])
-    n_workers = min(os.cpu_count() or 1, 2)
-    log.info(f"DataLoader workers: {n_workers}")
+
+    # Data is already on GPU — no need for workers or pin_memory
+    on_gpu = device.type == "cuda"
+    n_workers = 0 if on_gpu else min(os.cpu_count() or 1, 2)
+    log.info(f"DataLoader workers: {n_workers} (data on {'GPU' if on_gpu else 'CPU'})")
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg["model"]["batch_size"],
         shuffle=True,
         num_workers=n_workers,
-        pin_memory=(device.type == "cuda"),
-        persistent_workers=(n_workers > 0),
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=cfg["model"]["batch_size"] * 2,
         num_workers=n_workers,
-        pin_memory=(device.type == "cuda"),
-        persistent_workers=(n_workers > 0),
     )
 
     model = MCDropoutNet(input_dim=input_dim).to(device)
@@ -97,7 +95,6 @@ def train():
         t_losses = []
         pbar = tqdm(train_loader, desc=f"Epoch {epoch:3d} [train]", leave=False)
         for X, y in pbar:
-            X, y = X.to(device, non_blocking=True), y.to(device, non_blocking=True)
             optimizer.zero_grad()
             loss = criterion(model(X), y)
             loss.backward()
@@ -110,7 +107,6 @@ def train():
         v_losses = []
         with torch.no_grad():
             for X, y in tqdm(val_loader, desc=f"Epoch {epoch:3d} [val]", leave=False):
-                X, y = X.to(device, non_blocking=True), y.to(device, non_blocking=True)
                 v_losses.append(criterion(model(X), y).item())
 
         v_loss = np.mean(v_losses)
