@@ -90,7 +90,8 @@ def train():
     log.info(f"Class balance: pos={int(n_pos)}, neg={int(n_neg)}")
     pos_weight = torch.tensor([n_neg / n_pos], device=device)
     log.info(f"pos_weight: {pos_weight.item():.2f}")
-    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    train_criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    val_criterion = torch.nn.BCEWithLogitsLoss()  # unweighted for true val quality
 
     best_loss = float("inf")
     patience_ctr = 0
@@ -104,7 +105,7 @@ def train():
         pbar = tqdm(train_loader, desc=f"Epoch {epoch:3d} [train]", leave=False)
         for X, y in pbar:
             optimizer.zero_grad()
-            loss = criterion(model(X), y)
+            loss = train_criterion(model(X), y)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -115,13 +116,13 @@ def train():
         v_losses = []
         with torch.no_grad():
             for X, y in tqdm(val_loader, desc=f"Epoch {epoch:3d} [val]", leave=False):
-                v_losses.append(criterion(model(X), y).item())
+                v_losses.append(val_criterion(model(X), y).item())
 
         v_loss = np.mean(v_losses)
         scheduler.step(v_loss)
         if epoch % 10 == 0:
             log.info(
-                f"Epoch {epoch:3d} | Train: {np.mean(t_losses):.4f} | Val: {v_loss:.4f}"
+                f"Epoch {epoch:3d} | Train(w): {np.mean(t_losses):.4f} | Val: {v_loss:.4f}"
             )
 
         if v_loss < best_loss:

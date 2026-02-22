@@ -47,7 +47,7 @@ model:
   hidden_dims: [256, 128, 64]
   dropout_rate: 0.20
   mc_dropout_samples: 50
-  learning_rate: 0.001
+  learning_rate: 0.0003
   batch_size: 2048
   max_epochs: 100
   early_stopping_patience: 10
