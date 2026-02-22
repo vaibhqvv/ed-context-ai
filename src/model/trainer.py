@@ -91,7 +91,7 @@ def train():
 
     model = MCDropoutNet(input_dim=input_dim).to(device)
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=cfg["model"]["learning_rate"], weight_decay=1e-5
+        model.parameters(), lr=cfg["model"]["learning_rate"], weight_decay=1e-3
     )
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=cfg["model"]["max_epochs"], eta_min=1e-5
