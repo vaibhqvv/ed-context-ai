@@ -43,7 +43,7 @@ class MCDropoutGRU(nn.Module):
         """
         scores = self.attn_w(output).squeeze(-1)  # (batch, seq_len)
         if lengths is not None:
-            mask = torch.arange(output.size(1), device=output.device).unsqueeze(0) >= lengths.unsqueeze(1)
+            mask = torch.arange(output.size(1), device=output.device).unsqueeze(0) >= lengths.to(output.device).unsqueeze(1)
             scores = scores.masked_fill(mask, float("-inf"))
         weights = torch.softmax(scores, dim=-1).unsqueeze(-1)  # (batch, seq_len, 1)
         return (output * weights).sum(dim=1)  # (batch, hidden_dim)
