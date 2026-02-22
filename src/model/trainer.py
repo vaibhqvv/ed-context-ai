@@ -48,6 +48,13 @@ def train():
 
     log.info(f"Dataset: {len(dataset)} samples")
 
+    # Standardize features (zero mean, unit variance)
+    mean = dataset.X.mean(dim=0)
+    std = dataset.X.std(dim=0)
+    std[std < 1e-8] = 1.0  # avoid division by zero for constant features
+    dataset.X = (dataset.X - mean) / std
+    log.info("Standardized input features (mean=0, std=1)")
+
     input_dim = dataset.X.shape[1]
     cfg["model"]["input_dim"] = input_dim
     log.info(f"Input dim: {input_dim}")
@@ -122,7 +129,12 @@ def train():
             patience_ctr = 0
             cpu_state = {k: v.cpu() for k, v in model.state_dict().items()}
             torch.save(
-                {"model_state": cpu_state, "input_dim": input_dim},
+                {
+                    "model_state": cpu_state,
+                    "input_dim": input_dim,
+                    "feature_mean": mean.cpu(),
+                    "feature_std": std.cpu(),
+                },
                 save_path / "best_model.pt",
             )
         else:

@@ -6,10 +6,12 @@ from src.utils.device import get_device
 
 cfg = get_config()
 _MODEL = None
+_FEATURE_MEAN = None
+_FEATURE_STD = None
 
 
 def load_model():
-    global _MODEL
+    global _MODEL, _FEATURE_MEAN, _FEATURE_STD
     if _MODEL is not None:
         return _MODEL
     device = get_device()
@@ -19,6 +21,8 @@ def load_model():
     model = MCDropoutNet(input_dim=ckpt["input_dim"])
     model.load_state_dict(ckpt["model_state"])
     model.to(device)
+    _FEATURE_MEAN = ckpt["feature_mean"].to(device)
+    _FEATURE_STD = ckpt["feature_std"].to(device)
     _MODEL = model
     return model
 
@@ -27,6 +31,7 @@ def predict(context) -> dict:
     model = load_model()
     device = next(model.parameters()).device
     x = torch.tensor(np.array(context.context_vector, dtype=np.float32)).unsqueeze(0).to(device)
+    x = (x - _FEATURE_MEAN) / _FEATURE_STD
     mean, var, _ = model.predict_with_uncertainty(x)
     risk = float(mean.item())
     unc = float(var.item())
