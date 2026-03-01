@@ -40,12 +40,18 @@ def get_model_type():
 
 
 def predict(context) -> dict:
-    """Predict for a single context object (MLP path)."""
+    """Predict for a single context object (works for both MLP and GRU)."""
     model = load_model()
     device = next(model.parameters()).device
     x = torch.tensor(np.array(context.context_vector, dtype=np.float32)).unsqueeze(0).to(device)
     x = (x - _FEATURE_MEAN) / _FEATURE_STD
-    mean, var, _ = model.predict_with_uncertainty(x)
+    if _MODEL_TYPE == "gru":
+        # GRU expects (batch, seq_len, input_dim); treat single context as length-1 sequence
+        x = x.unsqueeze(1)  # (1, 1, input_dim)
+        lengths = torch.tensor([1], dtype=torch.long)
+        mean, var, _ = model.predict_with_uncertainty(x, lengths=lengths)
+    else:
+        mean, var, _ = model.predict_with_uncertainty(x)
     risk = float(mean.item())
     unc = float(var.item())
     return {
