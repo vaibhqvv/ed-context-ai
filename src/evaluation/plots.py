@@ -1,3 +1,5 @@
+import matplotlib
+matplotlib.use("Agg")
 import numpy as np, matplotlib.pyplot as plt
 from pathlib import Path
 from sklearn.metrics import roc_curve, precision_recall_curve, auc
