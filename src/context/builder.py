@@ -85,7 +85,7 @@ def run_context_construction():
         json.dump([asdict(c) for c in all_ctxs[:3]], f, indent=2, default=str)
     log.info(f"Built {len(all_ctxs)} context objects from {len(records)} patients")
     log.info(
-        f"Context vector dimension: {len(all_ctxs[0].context_vector)} (should be 63)"
+        f"Context vector dimension: {len(all_ctxs[0].context_vector)} (should be 72)"
     )
     return all_ctxs
 

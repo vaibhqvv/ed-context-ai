@@ -44,7 +44,7 @@ context:
 
 model:
   model_type: "gru"        # "mlp" or "gru"
-  input_dim: 63
+  input_dim: 72
   hidden_dims: [256, 128, 64]
   dropout_rate: 0.35
   mc_dropout_samples: 50
@@ -52,6 +52,8 @@ model:
   batch_size: 512
   max_epochs: 200
   early_stopping_patience: 30
+  label_smoothing: 0.05
+  warmup_epochs: 5
   gru_hidden_dim: 128
   gru_num_layers: 2
   uncertainty_thresholds:

@@ -123,12 +123,15 @@ def train():
     else:
         model = MCDropoutNet(input_dim=input_dim).to(device)
 
+    base_lr = cfg["model"]["learning_rate"]
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=cfg["model"]["learning_rate"], weight_decay=5e-3
+        model.parameters(), lr=base_lr, weight_decay=5e-3
     )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="max", factor=0.5, patience=5, min_lr=1e-6
     )
+    warmup_epochs = cfg["model"].get("warmup_epochs", 5)
+    log.info(f"LR warmup: {warmup_epochs} epochs, then ReduceLROnPlateau")
 
     # --- Class balance ---
     if model_type == "gru":
@@ -140,6 +143,10 @@ def train():
     log.info(f"Train class balance: pos={n_pos}, neg={n_neg}")
     pos_weight = torch.tensor([n_neg / n_pos], device=device)
     log.info(f"pos_weight: {pos_weight.item():.2f}")
+
+    # --- Label smoothing ---
+    label_smoothing = cfg["model"].get("label_smoothing", 0.0)
+    log.info(f"Label smoothing: {label_smoothing}")
     train_criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     val_criterion = torch.nn.BCEWithLogitsLoss()
 
@@ -152,6 +159,12 @@ def train():
     is_gru = model_type == "gru"
 
     for epoch in range(cfg["model"]["max_epochs"]):
+        # --- LR warmup ---
+        if epoch < warmup_epochs:
+            warmup_lr = base_lr * (epoch + 1) / warmup_epochs
+            for pg in optimizer.param_groups:
+                pg["lr"] = warmup_lr
+
         model.train()
         t_losses = []
         pbar = tqdm(train_loader, desc=f"Epoch {epoch:3d} [train]", leave=False)
@@ -162,6 +175,9 @@ def train():
             else:
                 X, y = batch
                 lengths = None
+            # Apply label smoothing
+            if label_smoothing > 0:
+                y = y * (1 - label_smoothing) + 0.5 * label_smoothing
             optimizer.zero_grad()
             logits = model(X, lengths) if is_gru else model(X)
             loss = train_criterion(logits, y)
@@ -193,7 +209,8 @@ def train():
         val_auroc = roc_auc_score(all_labels, val_probs)
         val_auprc = average_precision_score(all_labels, val_probs)
 
-        scheduler.step(val_auroc)
+        if epoch >= warmup_epochs:
+            plateau_scheduler.step(val_auroc)
         if epoch % 10 == 0:
             log.info(
                 f"Epoch {epoch:3d} | Train(w): {np.mean(t_losses):.4f} | Val: {v_loss:.4f}"

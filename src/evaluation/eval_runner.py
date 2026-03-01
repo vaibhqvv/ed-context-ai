@@ -1,4 +1,4 @@
-import gc, torch, pickle, numpy as np
+import gc, json, torch, pickle, numpy as np
 from pathlib import Path
 from tqdm import tqdm
 from torch.nn.utils.rnn import pad_sequence
@@ -12,6 +12,7 @@ from src.evaluation.metrics import (
 )
 from src.evaluation.plots import plot_roc, plot_calibration, plot_uncertainty_hist
 from src.evaluation.baseline import run_logistic_regression_baseline
+from src.evaluation.calibration import fit_temperature, calibrate_probabilities
 from src.utils.config_loader import get_config
 from src.utils.logger import get_logger
 from src.utils.device import get_device
@@ -47,12 +48,45 @@ def _load_contexts():
     return ctxs
 
 
+def _get_test_patient_ids(ctxs):
+    """Get test-set patient IDs from splits.json or create a split."""
+    splits_path = Path(cfg["paths"].get("splits", "data/splits")) / "splits.json"
+    if splits_path.exists():
+        log.info(f"Using saved splits from {splits_path}")
+        with open(splits_path) as f:
+            splits = json.load(f)
+        # splits.json has stay_ids; we need patient_ids. Load the mapping.
+        records_path = Path(cfg["paths"]["processed_data"]) / "patient_records.pkl"
+        with open(records_path, "rb") as f:
+            records = pickle.load(f)
+        stay_to_patient = {r.stay_id: r.patient_id for r in records}
+        del records
+        test_stay_ids = set(splits.get("test", []))
+        test_pids = {stay_to_patient[sid] for sid in test_stay_ids if sid in stay_to_patient}
+        val_stay_ids = set(splits.get("val", []))
+        val_pids = {stay_to_patient[sid] for sid in val_stay_ids if sid in stay_to_patient}
+        log.info(f"Test patients: {len(test_pids)}, Val patients: {len(val_pids)}")
+        return test_pids, val_pids
+
+    # Fallback: create our own 70/15/15 patient-level split
+    log.info("No splits.json found — creating patient-level 70/15/15 split")
+    all_pids = list(set(ctx.patient_id for ctx in ctxs))
+    np.random.seed(42)
+    np.random.shuffle(all_pids)
+    n = len(all_pids)
+    n_train = int(0.70 * n)
+    n_val = int(0.15 * n)
+    val_pids = set(all_pids[n_train:n_train + n_val])
+    test_pids = set(all_pids[n_train + n_val:])
+    log.info(f"Test patients: {len(test_pids)}, Val patients: {len(val_pids)}")
+    return test_pids, val_pids
+
+
 def _eval_mlp(ctxs, label_map, model):
     """Per-context evaluation for MLP with batched GPU inference."""
     device = next(model.parameters()).device
     log.info("Filtering valid contexts for MLP evaluation...")
 
-    # Collect valid contexts
     valid_x, valid_labels = [], []
     for ctx in tqdm(ctxs, desc="Filtering contexts", unit="ctx"):
         label = label_map.get(ctx.patient_id)
@@ -66,9 +100,8 @@ def _eval_mlp(ctxs, label_map, model):
     log.info(f"Valid contexts: {len(valid_x)}")
     y_true = np.array(valid_labels)
 
-    # Batch inference on GPU for speed
     batch_size = 512
-    y_prob_list, y_unc_list = [], []
+    y_prob_list, y_unc_list, y_logit_list = [], [], []
     n_batches = (len(valid_x) + batch_size - 1) // batch_size
 
     for i in tqdm(range(n_batches), desc="MC Dropout inference", unit="batch"):
@@ -76,12 +109,17 @@ def _eval_mlp(ctxs, label_map, model):
         end = min(start + batch_size, len(valid_x))
         x_batch = torch.tensor(np.stack(valid_x[start:end]), dtype=torch.float32).to(device)
         mean, var, _ = model.predict_with_uncertainty(x_batch)
-        y_prob_list.append(mean.cpu().numpy())
+        # Convert mean probs back to logits for temperature scaling
+        mean_np = mean.cpu().numpy()
+        logits = np.log(mean_np / (1 - np.clip(mean_np, 1e-7, 1 - 1e-7)))
+        y_logit_list.append(logits)
+        y_prob_list.append(mean_np)
         y_unc_list.append(var.cpu().numpy())
 
     y_prob = np.concatenate(y_prob_list)
     y_unc = np.concatenate(y_unc_list)
-    return y_true, y_prob, y_unc
+    y_logits = np.concatenate(y_logit_list)
+    return y_true, y_prob, y_unc, y_logits
 
 
 def _eval_gru(ctxs, label_map):
@@ -90,7 +128,6 @@ def _eval_gru(ctxs, label_map):
     model = load_model()
     feat_mean, feat_std = get_feature_stats()
 
-    # --- 1. Group contexts into stays ---
     log.info("Grouping contexts by (patient_id, stay_id)...")
     stays = {}
     labels_map = {}
@@ -110,9 +147,8 @@ def _eval_gru(ctxs, label_map):
 
     log.info(f"Total stays to evaluate: {len(stays)}")
 
-    # --- 2. Build sorted sequences (list of tensors) ---
     log.info("Building sequence tensors...")
-    all_seqs = []  # list of (seq_len, feat_dim) tensors
+    all_seqs = []
     all_labels = []
     for key, ctx_list in tqdm(stays.items(), desc="Building sequences", unit="stay"):
         ctx_list.sort(key=lambda c: c.window_index)
@@ -125,47 +161,47 @@ def _eval_gru(ctxs, label_map):
     del stays, labels_map
     gc.collect()
 
-    # --- 3. Batched MC Dropout inference ---
     batch_size = 256
     n_total = len(all_seqs)
     n_batches = (n_total + batch_size - 1) // batch_size
-    log.info(f"Running batched GRU inference: {n_total} stays, batch_size={batch_size}, {n_batches} batches")
+    log.info(f"Running batched GRU inference: {n_total} stays, batch_size={batch_size}")
 
-    # Enable MC dropout
     model.eval()
     for m in model.modules():
         if isinstance(m, torch.nn.Dropout):
             m.train()
 
     n_mc = cfg["model"]["mc_dropout_samples"]
-    y_prob_list, y_unc_list = [], []
+    y_prob_list, y_unc_list, y_logit_list = [], [], []
 
     for i in tqdm(range(n_batches), desc="Batched GRU inference", unit="batch"):
         start = i * batch_size
         end = min(start + batch_size, n_total)
         batch_seqs = all_seqs[start:end]
 
-        # Pad sequences and build lengths
         lengths = torch.tensor([s.shape[0] for s in batch_seqs], dtype=torch.long)
         padded = pad_sequence(batch_seqs, batch_first=True, padding_value=0.0).to(device)
-        # Normalize
         padded = (padded - feat_mean) / feat_std
 
-        # MC Dropout: run n_mc forward passes
         with torch.no_grad():
             logits_stack = torch.stack(
                 [model(padded, lengths) for _ in range(n_mc)], dim=0
-            )  # (n_mc, batch_size)
-            preds = torch.sigmoid(logits_stack)  # (n_mc, batch_size)
-            mean = preds.mean(dim=0)  # (batch_size,)
-            var = preds.var(dim=0)    # (batch_size,)
+            )
+            preds = torch.sigmoid(logits_stack)
+            mean = preds.mean(dim=0)
+            var = preds.var(dim=0)
+            # Mean logits for temperature scaling
+            mean_logits = logits_stack.mean(dim=0)
 
-        y_prob_list.append(mean.cpu().numpy())
+        mean_np = mean.cpu().numpy()
+        y_prob_list.append(mean_np)
         y_unc_list.append(var.cpu().numpy())
+        y_logit_list.append(mean_logits.cpu().numpy())
 
     y_prob = np.concatenate(y_prob_list)
     y_unc = np.concatenate(y_unc_list)
-    return y_true, y_prob, y_unc
+    y_logits = np.concatenate(y_logit_list)
+    return y_true, y_prob, y_unc, y_logits
 
 
 def run_evaluation():
@@ -180,40 +216,80 @@ def run_evaluation():
     label_map = load_label_map()
     log.info(f"Label map: {len(label_map)} patients")
 
+    # --- Get test/val splits ---
+    test_pids, val_pids = _get_test_patient_ids(ctxs)
+
+    # Filter to test-set contexts only
+    test_ctxs = [c for c in tqdm(ctxs, desc="Filtering test set") if c.patient_id in test_pids]
+    val_ctxs = [c for c in ctxs if c.patient_id in val_pids]
+    log.info(f"Test contexts: {len(test_ctxs)}, Val contexts: {len(val_ctxs)}")
+
+    # Free full set
+    del ctxs
+    gc.collect()
+
     log.info("Loading model...")
     model = load_model()
     model_type = get_model_type()
     log.info(f"Evaluating {model_type.upper()} model on {device}")
 
-    # --- Model inference ---
+    # --- Validation set inference (for temperature scaling) ---
+    log.info("--- Running inference on validation set for temperature calibration ---")
     if model_type == "gru":
-        y_true, y_prob, y_unc = _eval_gru(ctxs, label_map)
+        val_true, val_prob, val_unc, val_logits = _eval_gru(val_ctxs, label_map)
     else:
-        y_true, y_prob, y_unc = _eval_mlp(ctxs, label_map, model)
+        val_true, val_prob, val_unc, val_logits = _eval_mlp(val_ctxs, label_map, model)
 
-    # Free memory before baseline
-    del ctxs
+    del val_ctxs
+    gc.collect()
+
+    # --- Fit temperature scaling ---
+    log.info("Fitting temperature scaling on validation set...")
+    temperature = fit_temperature(val_logits, val_true)
+    del val_true, val_prob, val_unc, val_logits
+    gc.collect()
+
+    # --- Test set inference ---
+    log.info("--- Running inference on test set ---")
+    if model_type == "gru":
+        y_true, y_prob_raw, y_unc, y_logits = _eval_gru(test_ctxs, label_map)
+    else:
+        y_true, y_prob_raw, y_unc, y_logits = _eval_mlp(test_ctxs, label_map, model)
+
+    del test_ctxs
     gc.collect()
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    log.info(f"Evaluation samples: {len(y_true)}")
+    log.info(f"Test samples: {len(y_true)}")
 
-    # --- Metrics ---
-    log.info("Computing metrics...")
-    metrics = compute_all_metrics(y_true, y_prob)
-    metrics["ece"] = compute_ece(y_true, y_prob)
-    metrics["uncertainty_stratified_auroc"] = uncertainty_stratified_auroc(
-        y_true, y_prob, y_unc
+    # --- Calibrate probabilities ---
+    y_prob_calibrated = calibrate_probabilities(y_logits, temperature)
+
+    # --- Metrics (raw) ---
+    log.info("Computing metrics (raw probabilities)...")
+    metrics_raw = compute_all_metrics(y_true, y_prob_raw)
+    metrics_raw["ece"] = compute_ece(y_true, y_prob_raw)
+    metrics_raw["uncertainty_stratified_auroc"] = uncertainty_stratified_auroc(
+        y_true, y_prob_raw, y_unc
     )
-    save_metrics(metrics, "main_model")
-    log.info("Main model metrics saved")
+    save_metrics(metrics_raw, "main_model_raw")
 
-    # --- Plots ---
+    # --- Metrics (calibrated) ---
+    log.info("Computing metrics (temperature-scaled)...")
+    metrics_cal = compute_all_metrics(y_true, y_prob_calibrated)
+    metrics_cal["ece"] = compute_ece(y_true, y_prob_calibrated)
+    metrics_cal["temperature"] = temperature
+    metrics_cal["uncertainty_stratified_auroc"] = uncertainty_stratified_auroc(
+        y_true, y_prob_calibrated, y_unc
+    )
+    save_metrics(metrics_cal, "main_model")
+
+    # --- Plots (calibrated) ---
     log.info("Generating plots...")
-    plot_roc(y_true, y_prob)
+    plot_roc(y_true, y_prob_calibrated)
     log.info("  ✓ ROC curve")
-    plot_calibration(y_true, y_prob)
+    plot_calibration(y_true, y_prob_calibrated)
     log.info("  ✓ Calibration curve")
     plot_uncertainty_hist(y_unc, y_true)
     log.info("  ✓ Uncertainty histogram")
@@ -221,14 +297,19 @@ def run_evaluation():
     # --- Baseline ---
     log.info("Running logistic regression baseline...")
     baseline_m = run_logistic_regression_baseline()
-    comparison = {"model": metrics, "baseline_lr": baseline_m}
+    comparison = {
+        "model_raw": metrics_raw,
+        "model_calibrated": metrics_cal,
+        "baseline_lr": baseline_m,
+    }
     save_metrics(comparison, "comparison")
 
     log.info("=== Evaluation Complete ===")
-    log.info(f'  Model AUROC:    {metrics["auroc"]:.3f}')
-    log.info(f'  Baseline AUROC: {baseline_m["auroc"]:.3f}')
-    log.info(f'  ECE:            {metrics["ece"]:.4f}')
-    return metrics
+    log.info(f'  Raw AUROC:        {metrics_raw["auroc"]:.3f} (ECE: {metrics_raw["ece"]:.4f})')
+    log.info(f'  Calibrated AUROC: {metrics_cal["auroc"]:.3f} (ECE: {metrics_cal["ece"]:.4f})')
+    log.info(f'  Baseline AUROC:   {baseline_m["auroc"]:.3f}')
+    log.info(f'  Temperature:      {temperature:.4f}')
+    return metrics_cal
 
 
 if __name__ == "__main__":

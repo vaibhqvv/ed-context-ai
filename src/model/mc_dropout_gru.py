@@ -26,7 +26,11 @@ class MCDropoutGRU(nn.Module):
         self.layer_norm = nn.LayerNorm(hidden_dim)
         self.head = nn.Sequential(
             nn.Dropout(p),
-            nn.Linear(hidden_dim, 32),
+            nn.Linear(hidden_dim, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Dropout(p),
+            nn.Linear(64, 32),
             nn.ReLU(),
             nn.Dropout(p),
             nn.Linear(32, 1),

@@ -51,7 +51,10 @@ def build_context_vector(
     [60)       — Sepsis flag (0 or 1)
     [61)       — n_medications (clipped, normalized)
     [62)       — Deterioration flag (missing_critical count > 0)
-    Total: 63 dimensions
+    [63)       — Shock index (HR / SBP)
+    [64)       — Pulse pressure (SBP - DBP)
+    [65 : 72)  — Vital deviations from triage (7 vitals)
+    Total: 72 dimensions
     """
     vec = []
 
@@ -87,5 +90,28 @@ def build_context_vector(
     vec.append(float(min(n_medications, 30)) / 30.0)
 
     vec.append(1.0 if len(missing_critical) > 0 else 0.0)
+
+    # --- New features (indices 63-71) ---
+
+    # Shock index: HR / SBP (clinically important hemodynamic marker)
+    hr = _safe(window.features.get("heartrate_mean"))
+    sbp = _safe(window.features.get("sbp_mean"))
+    shock_index = hr / sbp if sbp > 0 else 0.0
+    vec.append(float(np.clip(shock_index, 0, 3)))
+
+    # Pulse pressure: SBP - DBP (narrow = shock, wide = stiff arteries)
+    dbp = _safe(window.features.get("dbp_mean"))
+    pulse_pressure = (sbp - dbp) / 100.0  # normalized
+    vec.append(float(np.clip(pulse_pressure, -1, 2)))
+
+    # Vital deviations from triage (how much has patient changed from baseline)
+    for feat in ALL_FEATURES:
+        current = _safe(window.features.get(f"{feat}_mean"))
+        triage_val = _safe(triage_vitals.get(feat))
+        if triage_val != 0 and current != 0:
+            deviation = (current - triage_val) / max(abs(triage_val), 1.0)
+        else:
+            deviation = 0.0
+        vec.append(float(np.clip(deviation, -5, 5)))
 
     return vec
