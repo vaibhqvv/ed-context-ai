@@ -39,6 +39,12 @@ def get_model_type():
     return _MODEL_TYPE
 
 
+def get_feature_stats():
+    """Return (feature_mean, feature_std) tensors on the model's device."""
+    load_model()
+    return _FEATURE_MEAN, _FEATURE_STD
+
+
 def predict(context) -> dict:
     """Predict for a single context object (works for both MLP and GRU)."""
     model = load_model()

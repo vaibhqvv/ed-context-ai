@@ -1,8 +1,9 @@
 import gc, torch, pickle, numpy as np
 from pathlib import Path
 from tqdm import tqdm
-from src.model.inference import load_model, get_model_type, predict_sequence
-from src.model.dataset import EDContextDataset, load_label_map
+from torch.nn.utils.rnn import pad_sequence
+from src.model.inference import load_model, get_model_type, get_feature_stats
+from src.model.dataset import load_label_map
 from src.evaluation.metrics import (
     compute_all_metrics,
     compute_ece,
@@ -84,7 +85,12 @@ def _eval_mlp(ctxs, label_map, model):
 
 
 def _eval_gru(ctxs, label_map):
-    """Sequence-level evaluation for GRU — one prediction per stay."""
+    """Sequence-level evaluation for GRU with batched padded GPU inference."""
+    device = get_device()
+    model = load_model()
+    feat_mean, feat_std = get_feature_stats()
+
+    # --- 1. Group contexts into stays ---
     log.info("Grouping contexts by (patient_id, stay_id)...")
     stays = {}
     labels_map = {}
@@ -104,15 +110,62 @@ def _eval_gru(ctxs, label_map):
 
     log.info(f"Total stays to evaluate: {len(stays)}")
 
-    y_true, y_prob, y_unc = [], [], []
-    for key, ctx_list in tqdm(stays.items(), desc="GRU inference", unit="stay"):
+    # --- 2. Build sorted sequences (list of tensors) ---
+    log.info("Building sequence tensors...")
+    all_seqs = []  # list of (seq_len, feat_dim) tensors
+    all_labels = []
+    for key, ctx_list in tqdm(stays.items(), desc="Building sequences", unit="stay"):
         ctx_list.sort(key=lambda c: c.window_index)
-        result = predict_sequence(ctx_list)
-        y_true.append(float(labels_map[key]))
-        y_prob.append(result["risk_probability"])
-        y_unc.append(result["uncertainty_score"])
+        vecs = [np.array(c.context_vector, dtype=np.float32) for c in ctx_list]
+        seq = torch.tensor(np.stack(vecs), dtype=torch.float32)
+        all_seqs.append(seq)
+        all_labels.append(float(labels_map[key]))
 
-    return np.array(y_true), np.array(y_prob), np.array(y_unc)
+    y_true = np.array(all_labels)
+    del stays, labels_map
+    gc.collect()
+
+    # --- 3. Batched MC Dropout inference ---
+    batch_size = 256
+    n_total = len(all_seqs)
+    n_batches = (n_total + batch_size - 1) // batch_size
+    log.info(f"Running batched GRU inference: {n_total} stays, batch_size={batch_size}, {n_batches} batches")
+
+    # Enable MC dropout
+    model.eval()
+    for m in model.modules():
+        if isinstance(m, torch.nn.Dropout):
+            m.train()
+
+    n_mc = cfg["model"]["mc_dropout_samples"]
+    y_prob_list, y_unc_list = [], []
+
+    for i in tqdm(range(n_batches), desc="Batched GRU inference", unit="batch"):
+        start = i * batch_size
+        end = min(start + batch_size, n_total)
+        batch_seqs = all_seqs[start:end]
+
+        # Pad sequences and build lengths
+        lengths = torch.tensor([s.shape[0] for s in batch_seqs], dtype=torch.long)
+        padded = pad_sequence(batch_seqs, batch_first=True, padding_value=0.0).to(device)
+        # Normalize
+        padded = (padded - feat_mean) / feat_std
+
+        # MC Dropout: run n_mc forward passes
+        with torch.no_grad():
+            logits_stack = torch.stack(
+                [model(padded, lengths) for _ in range(n_mc)], dim=0
+            )  # (n_mc, batch_size)
+            preds = torch.sigmoid(logits_stack)  # (n_mc, batch_size)
+            mean = preds.mean(dim=0)  # (batch_size,)
+            var = preds.var(dim=0)    # (batch_size,)
+
+        y_prob_list.append(mean.cpu().numpy())
+        y_unc_list.append(var.cpu().numpy())
+
+    y_prob = np.concatenate(y_prob_list)
+    y_unc = np.concatenate(y_unc_list)
+    return y_true, y_prob, y_unc
 
 
 def run_evaluation():
