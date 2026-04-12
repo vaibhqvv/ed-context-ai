@@ -166,7 +166,8 @@ def run_preprocessing() -> list:
     return records
 
 
-def _save_splits(records: list, train=0.70, val=0.15, test=0.15):
+def _save_splits(records: list, train=0.70, val=0.15, test=0.15, suffix=""):
+    """Save patient-level splits. Use suffix for experiment variants (e.g. '_70_30')."""
     import random
 
     split_path = Path(cfg["paths"]["splits"])
@@ -189,13 +190,15 @@ def _save_splits(records: list, train=0.70, val=0.15, test=0.15):
         "test": [r.stay_id for r in records if r.patient_id in test_pids],
     }
 
-    with open(split_path / "splits.json", "w") as f:
+    filename = f"splits{suffix}.json"
+    with open(split_path / filename, "w") as f:
         json.dump(splits, f, indent=2)
 
     log.info(
-        f'Splits: train={len(splits["train"])} | val={len(splits["val"])} | test={len(splits["test"])}'
+        f'Splits ({filename}): train={len(splits["train"])} | val={len(splits["val"])} | test={len(splits["test"])}'
     )
     log.info("Split is by PATIENT (subject_id) to prevent data leakage")
+    return splits
 
 
 if __name__ == "__main__":
