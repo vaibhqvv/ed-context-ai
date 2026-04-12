@@ -21,15 +21,17 @@ class EDContextDataset(Dataset):
             if key not in best or ctx.window_index > best[key][0]:
                 best[key] = (ctx.window_index, vec, label)
 
-        vecs, labels, patient_ids = [], [], []
-        for (pid, _sid), (_widx, vec, label) in best.items():
+        vecs, labels, patient_ids, stay_ids = [], [], [], []
+        for (pid, sid), (_widx, vec, label) in best.items():
             vecs.append(vec)
             labels.append(label)
             patient_ids.append(pid)
+            stay_ids.append(sid)
 
         self.X = torch.tensor(vecs, dtype=torch.float32)
         self.y = torch.tensor(labels, dtype=torch.float32)
         self.patient_ids = patient_ids
+        self.stay_ids = stay_ids
         if device is not None:
             self.X = self.X.to(device)
             self.y = self.y.to(device)

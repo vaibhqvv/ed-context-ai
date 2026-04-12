@@ -30,12 +30,14 @@ class EDSequenceDataset(Dataset):
         self.sequences = []  # list of (seq_len, feat_dim) tensors
         self.labels = []
         self.patient_ids = []
-        for (pid, _sid), windows in stays.items():
+        self.stay_ids = []
+        for (pid, sid), windows in stays.items():
             windows.sort(key=lambda w: w[0])
             seq = torch.tensor([w[1] for w in windows], dtype=torch.float32)
             self.sequences.append(seq)
-            self.labels.append(float(labels_map[(pid, _sid)]))
+            self.labels.append(float(labels_map[(pid, sid)]))
             self.patient_ids.append(pid)
+            self.stay_ids.append(sid)
 
         self.labels = torch.tensor(self.labels, dtype=torch.float32)
         if device is not None:
