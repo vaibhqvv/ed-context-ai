@@ -36,7 +36,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import torch.multiprocessing as mp
 import torch.nn as nn
+
+# File-system sharing strategy avoids /dev/shm exhaustion in Docker
+# containers (common on cloud GPU servers where /dev/shm is 64MB).
+try:
+    mp.set_sharing_strategy("file_system")
+except Exception:
+    pass
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import (
     auc,
@@ -76,6 +84,10 @@ MC_INFERENCE_BATCH = 1024        # up from 256
 USE_TORCH_COMPILE = True         # PyTorch 2.x graph compilation
 USE_AMP = True                   # mixed precision
 AMP_DTYPE = torch.bfloat16       # 3090 supports bf16 natively, more stable than fp16
+# DataLoader workers: 0 is safest in Docker containers where /dev/shm is tiny
+# (typically 64MB). Override with --workers N if your container has a larger
+# /dev/shm (run Docker with --shm-size=8g, or set NUM_WORKERS env var).
+NUM_WORKERS = int(os.environ.get("NUM_WORKERS", "0"))
 
 # Model-specific configuration overrides (keeps config.yaml intact)
 # These are only injected into the new LSTM/Transformer models, not the GRU.
@@ -217,21 +229,22 @@ def train_model(model_key, dataset, train_idx, val_idx, device, out_dir):
     train_ds = Subset(view, train_idx)
     val_ds = Subset(view, val_idx)
 
-    # 3090 optimization: bigger batch, more DataLoader workers (CPU→GPU overlap)
+    # 3090 optimization: bigger batch. Workers default to 0 to avoid shared
+    # memory issues in Docker containers (override via NUM_WORKERS env var).
     batch_size = TRAIN_BATCH_SIZE
-    n_workers = min(os.cpu_count() or 1, 4) if device.type == "cuda" else 2
+    n_workers = NUM_WORKERS
     log.info(f"Batch size: {batch_size} | Workers: {n_workers}")
 
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, shuffle=True,
         num_workers=n_workers, collate_fn=sequence_collate_fn,
-        pin_memory=(device.type == "cuda"),
+        pin_memory=(device.type == "cuda" and n_workers > 0),
         persistent_workers=(n_workers > 0),
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size * 2, shuffle=False,
         num_workers=n_workers, collate_fn=sequence_collate_fn,
-        pin_memory=(device.type == "cuda"),
+        pin_memory=(device.type == "cuda" and n_workers > 0),
         persistent_workers=(n_workers > 0),
     )
 
