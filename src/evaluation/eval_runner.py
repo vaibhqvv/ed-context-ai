@@ -11,7 +11,7 @@ from src.evaluation.metrics import (
     save_metrics,
 )
 from src.evaluation.plots import plot_roc, plot_calibration, plot_uncertainty_hist
-from src.evaluation.baseline import run_logistic_regression_baseline
+from src.evaluation.baseline import run_all_baselines
 from src.evaluation.calibration import fit_temperature, calibrate_probabilities
 from src.utils.config_loader import get_config
 from src.utils.logger import get_logger
@@ -294,20 +294,21 @@ def run_evaluation():
     plot_uncertainty_hist(y_unc, y_true)
     log.info("  ✓ Uncertainty histogram")
 
-    # --- Baseline ---
-    log.info("Running logistic regression baseline...")
-    baseline_m = run_logistic_regression_baseline()
+    # --- Baselines (LR, Random Forest, XGBoost) ---
+    log.info("Running all baselines...")
+    baseline_results = run_all_baselines()
     comparison = {
         "model_raw": metrics_raw,
         "model_calibrated": metrics_cal,
-        "baseline_lr": baseline_m,
+        **{f"baseline_{k}": v for k, v in baseline_results.items()},
     }
     save_metrics(comparison, "comparison")
 
     log.info("=== Evaluation Complete ===")
     log.info(f'  Raw AUROC:        {metrics_raw["auroc"]:.3f} (ECE: {metrics_raw["ece"]:.4f})')
     log.info(f'  Calibrated AUROC: {metrics_cal["auroc"]:.3f} (ECE: {metrics_cal["ece"]:.4f})')
-    log.info(f'  Baseline AUROC:   {baseline_m["auroc"]:.3f}')
+    for name, bm in baseline_results.items():
+        log.info(f'  {name.upper()} AUROC:      {bm["auroc"]:.3f}')
     log.info(f'  Temperature:      {temperature:.4f}')
     return metrics_cal
 

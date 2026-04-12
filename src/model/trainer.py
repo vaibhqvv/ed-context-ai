@@ -1,4 +1,4 @@
-import gc, os
+import gc, json, os
 import torch, numpy as np, pickle
 from pathlib import Path
 from torch.utils.data import DataLoader, Subset
@@ -68,15 +68,40 @@ def train():
     cfg["model"]["input_dim"] = input_dim
     log.info(f"Input dim: {input_dim}")
 
-    # --- Patient-level split ---
-    unique_pids = list(set(dataset.patient_ids))
-    np.random.seed(42)
-    np.random.shuffle(unique_pids)
-    val_count = int(0.2 * len(unique_pids))
-    val_pids = set(unique_pids[:val_count])
-    train_idx = [i for i, pid in enumerate(dataset.patient_ids) if pid not in val_pids]
-    val_idx = [i for i, pid in enumerate(dataset.patient_ids) if pid in val_pids]
-    log.info(f"Patient-level split: {len(unique_pids)-val_count} train / {val_count} val patients")
+    # --- Load splits from splits.json (patient-level, same as evaluator) ---
+    splits_path = Path(cfg["paths"].get("splits", "data/splits")) / "splits.json"
+    if splits_path.exists():
+        log.info(f"Using saved splits from {splits_path}")
+        with open(splits_path) as f:
+            splits = json.load(f)
+        train_stay_ids = set(splits.get("train", []))
+        val_stay_ids = set(splits.get("val", []))
+        test_stay_ids = set(splits.get("test", []))
+
+        train_idx, val_idx = [], []
+        skipped_test = 0
+        for i, sid in enumerate(dataset.stay_ids):
+            if sid in train_stay_ids:
+                train_idx.append(i)
+            elif sid in val_stay_ids:
+                val_idx.append(i)
+            elif sid in test_stay_ids:
+                skipped_test += 1
+            # stays not in any split are skipped (shouldn't happen normally)
+        log.info(
+            f"Split from splits.json: train={len(train_idx)} stays, "
+            f"val={len(val_idx)} stays, test={skipped_test} stays (excluded from training)"
+        )
+    else:
+        log.warning("No splits.json found — falling back to 80/20 patient-level split")
+        unique_pids = list(set(dataset.patient_ids))
+        np.random.seed(42)
+        np.random.shuffle(unique_pids)
+        val_count = int(0.2 * len(unique_pids))
+        val_pids = set(unique_pids[:val_count])
+        train_idx = [i for i, pid in enumerate(dataset.patient_ids) if pid not in val_pids]
+        val_idx = [i for i, pid in enumerate(dataset.patient_ids) if pid in val_pids]
+        log.info(f"Patient-level split: {len(unique_pids)-val_count} train / {val_count} val patients")
 
     # --- Standardize ---
     if model_type == "gru":
