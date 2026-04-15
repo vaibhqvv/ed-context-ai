@@ -1,0 +1,343 @@
+% ============================================================
+% Paper: ED-Context-AI — Conference-length (10-page) version
+%        for Springer LNCS.
+% Derived from paper.tex; same contribution, compressed prose.
+% ============================================================
+\documentclass[runningheads]{llncs}
+
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{subcaption}
+
+\begin{document}
+
+\title{ED-Context-AI: An Uncertainty-Aware Deep Learning System for Emergency Department Admission Prediction Using Temporal Vital Sign Context}
+
+\titlerunning{Uncertainty-Aware Deep Learning for ED Admissions}
+
+\author{Veer Pratap Singh\inst{1}\orcidID{0000-0000-0000-0000} \and
+Vaibhav Upadhyay\inst{1}\orcidID{0000-0000-0000-0000} \and
+Ilavarasi A. K.\inst{1}\orcidID{0000-0000-0000-0000}}
+
+\authorrunning{V. P. Singh et al.}
+
+\institute{SCOPE, Vellore Institute of Technology, Chennai, India \\
+\email{\{veerpratap.singh2023, vaibhav.upadhyay2023\}@vitstudent.ac.in}\\
+\email{ilavarasi.ak@vit.ac.in}}
+
+\maketitle
+
+% ============================================================
+% ABSTRACT
+% ============================================================
+\begin{abstract}
+Emergency department (ED) overcrowding makes timely identification of admission-bound patients a critical bottleneck in clinical decision-making. We propose \textbf{ED-Context-AI}, a clinical decision support system that predicts hospital admission from temporal vital signs using a Monte Carlo Dropout Gated Recurrent Unit (MC-Dropout GRU). The system converts six tables of MIMIC-IV-ED v2.2 into 72-dimensional clinically enriched context vectors containing vital statistics, trends, physiological state, data quality indicators, and derived hemodynamic markers (shock index, pulse pressure, deviations from triage baseline). These vectors are processed by a two-layer GRU with learned attention pooling; 50 stochastic forward passes quantify predictive uncertainty, which feeds a rule-based decision engine that outputs urgency, recommended tests, and a templated natural-language explanation. On 129{,}134 held-out stays (31.1\% admission prevalence), the GRU achieves AUROC 0.770 and AUPRC 0.578, outperforming XGBoost (0.752), Random Forest (0.745), Logistic Regression (0.717), LSTM+Attention (0.764), and a Transformer encoder (0.764). The advantage holds across three patient-level split ratios.
+\keywords{Clinical decision support \and Emergency department \and Hospital admission prediction \and Monte Carlo Dropout \and GRU \and Uncertainty quantification \and MIMIC-IV-ED}
+\end{abstract}
+
+% ============================================================
+% 1. INTRODUCTION
+% ============================================================
+\section{Introduction}
+
+Emergency department overcrowding is a global healthcare emergency that compromises patient safety and inflates wait times~\cite{Hoot2008,Morley2018}. A primary driver is the delay in identifying patients who require admission versus those suitable for discharge~\cite{Peck2012}. Classical triage scores (ESI, MEWS) rely on static data at arrival and ignore the temporal trajectory of deterioration~\cite{Levin2018}. Machine-learning approaches improve on these scores~\cite{Raita2019,Hong2018} but typically still use only triage-time features, missing the signal in how vitals evolve during the stay.
+
+Deep models for clinical time series, particularly RNNs, have shown strong results on mortality and readmission tasks~\cite{Rajkomar2018,Choi2016}. The GRU~\cite{Cho2014} is an efficient choice for the moderate-length sequences typical of ED visits. A remaining limitation of deep models is that their point predictions do not communicate confidence, which is unacceptable in safety-critical clinical use~\cite{Begoli2019}; MC Dropout~\cite{Gal2016} provides a Bayesian approximation of epistemic uncertainty without the cost of training ensembles.
+
+This paper proposes \textbf{ED-Context-AI}, an end-to-end clinical decision support pipeline. Our contributions are: (i) a 72-dimensional context vector that fuses vital statistics, trend classifications, physiological state, data-quality signals, and derived hemodynamic markers from raw MIMIC-IV-ED v2.2 data; (ii) an MC-Dropout GRU with learned attention pooling that consumes variable-length sequences of these vectors and returns calibrated risk with uncertainty via 50 stochastic passes; (iii) a rule-based decision engine and templated NLG explainer that map risk and uncertainty onto urgency, recommended tests, and a human-readable rationale; and (iv) a comprehensive evaluation on 129{,}134 held-out stays against three non-temporal baselines (Logistic Regression, Random Forest, XGBoost), two alternative temporal architectures (LSTM+Attention, Transformer encoder), and a split-ratio sensitivity analysis across three train/val/test configurations.
+
+% ============================================================
+% 2. RELATED WORK
+% ============================================================
+\section{Related Work}
+
+\paragraph{Machine learning for ED disposition.} Hong et al.~\cite{Hong2018} used gradient boosting on triage-time features and reported AUROC 0.87 on a single-site cohort. Raita et al.~\cite{Raita2019} showed ensembles dominate logistic regression on ED data. Xie et al.~\cite{Xie2022} established a MIMIC-IV-ED benchmark, and Moreno-S\'{a}nchez et al.~\cite{Moreno2024} highlighted the need for interpretability via explainable AI. These works rely on static triage features; our contribution uses the full temporal trajectory via sequential context vectors.
+
+\paragraph{Temporal models and uncertainty.} Recurrent networks with attention have been applied to ICU mortality~\cite{Kaji2019,Bahdanau2015} and full-EHR benchmarks~\cite{Harutyunyan2019}; Song et al.~\cite{Song2018} used attention-only models for clinical time series. For uncertainty, Gal and Ghahramani~\cite{Gal2016} framed dropout as approximate Bayesian inference, and Guo et al.~\cite{Guo2017} introduced temperature scaling as a discrimination-preserving post-hoc calibrator. MC Dropout has been used for radiology~\cite{Calderon2022,Leibig2017}; we extend it to ED time-series decision support. For interpretability, SHAP~\cite{Lundberg2017,Lauritsen2020} has become standard; we combine optional SHAP attribution with templated NLG to produce clinician-facing explanations.
+
+% ============================================================
+% 3. METHODOLOGY
+% ============================================================
+\section{Methodology}
+
+The pipeline has four phases: (1) preprocessing of MIMIC-IV-ED~\cite{Johnson2023} into \textit{PatientRecords}; (2) construction of 72-dimensional \textit{ContextObjects}; (3) risk and uncertainty estimation with the MC-Dropout GRU; (4) a rule-based decision engine and NLG explainer. Figure~\ref{fig:pipeline} shows the flow.
+
+\begin{figure}[t]
+\centering
+\small
+\fbox{\parbox{0.95\textwidth}{\centering
+\textbf{MIMIC-IV-ED (6 CSVs)} $\rightarrow$
+\textbf{Preprocessing}: filter + clean + 60-min windows $\rightarrow$
+\textbf{PatientRecords} $\rightarrow$
+\textbf{Context Builder}: trends, state, quality, derived markers $\rightarrow$
+\textbf{ContextObjects (72-d)} $\rightarrow$
+\textbf{MC-Dropout GRU} + attention pooling + 50 passes $\rightarrow$
+$(\hat{p}, \hat{u})$ $\rightarrow$
+\textbf{Decision Engine} (rule-based) + \textbf{NLG Explainer} $\rightarrow$
+\textbf{SystemOutput}}}
+\caption{ED-Context-AI pipeline: four phases from raw ED records to structured clinical recommendations.}
+\label{fig:pipeline}
+\end{figure}
+
+\subsection{Data and Preprocessing}
+MIMIC-IV-ED v2.2~\cite{Johnson2023} contains 425{,}087 ED stays from 205{,}504 patients across six tables (\texttt{edstays}, \texttt{triage}, \texttt{vitalsign}, \texttt{diagnosis}, \texttt{medrecon}, \texttt{pyxis}; $\approx$706~MB). The binary outcome is \textbf{hospital admission}, defined by a non-null \texttt{hadm\_id} in \texttt{edstays}~\cite{Xie2022}. Stays shorter than 2~hours or with fewer than 2 vital recordings in the first 24~hours are excluded, and any window containing NaN context features is dropped. Seven vital signs (heart rate, respiratory rate, SpO$_2$, SBP, DBP, temperature, pain) are cleaned (regex extraction, Fahrenheit conversion, physiological clipping, duplicate removal) and aggregated into non-overlapping 60-minute windows; per window we compute mean, last, min, max for each vital plus a missingness mask, observation density, and raw count. Triage vitals, ESI acuity, an ICD-based sepsis flag, and medication counts are attached. The final cohort contains $\approx$162{,}000 patients and 2.66~M windows at 31.1--31.3\% admission prevalence.
+
+\subsection{Context Vector Construction}
+Each 60-minute window is encoded into a 72-dimensional context vector whose composition is summarized in Table~\ref{tab:ctx}. The design is motivated by clinical practice: \textit{statistics} summarize the window, \textit{trends} (least-squares slope plus a five-level classifier with thresholds $\pm 2, \pm 5$ units/hour) model short-horizon dynamics, \textit{state} is a rule-based classifier over trend patterns (\textit{stable, concerning, deteriorating, critical}) that flags classical hemodynamic instability (rising HR with falling SBP)~\cite{Hoot2008}, \textit{quality} signals make the representation uncertainty-aware, and \textit{derived hemodynamic markers}---shock index (HR/SBP)~\cite{Koch2019}, pulse pressure, and per-vital deviations from triage baseline---inject domain knowledge that raw statistics cannot capture. All NaN values are replaced with 0.0 via a safety function.
+
+\begin{table}[t]
+\caption{Composition of the 72-dimensional context vector.}
+\label{tab:ctx}
+\centering\small
+\begin{tabular}{llcl}
+\toprule
+\textbf{Dims} & \textbf{Group} & \textbf{\#} & \textbf{Contents} \\
+\midrule
+0--27  & Vital statistics        & 28 & 7 vitals $\times$ \{mean, last, min, max\} \\
+28--34 & Trend labels            &  7 & 5-level classifier per vital \\
+35--41 & Trend slopes            &  7 & LS slope, clipped to $[-20, 20]$ \\
+42     & Physiological state     &  1 & \{stable, concerning, deteriorating, critical\} \\
+43--44 & Data confidence/density &  2 & Scalar quality indicators \\
+45--51 & Missingness mask        &  7 & Per-vital binary flags \\
+52--58 & Triage baseline vitals  &  7 & Vitals at triage (T=0) \\
+59--61 & Clinical metadata       &  3 & Acuity, sepsis flag, meds count \\
+62--64 & Derived + critical      &  3 & Shock index, pulse pressure, missing-critical \\
+65--71 & Vital deviations        &  7 & $(x_t - x_\text{triage})/|x_\text{triage}|$ per vital \\
+\midrule
+\multicolumn{2}{l}{\textbf{Total}} & \textbf{72} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Model Architecture and Training}
+The core model (Fig.~\ref{fig:pipeline}, block 3) is a two-layer GRU~\cite{Cho2014} with hidden size 128, inter-layer dropout $0.35$, and learned attention pooling over hidden states:
+\begin{equation}
+\mathbf{h}_t = \mathrm{GRU}(\mathbf{x}_t, \mathbf{h}_{t-1}), \quad
+\alpha_t = \frac{\exp(\mathbf{w}^\top \mathbf{h}_t)}{\sum_{j=1}^{T}\exp(\mathbf{w}^\top \mathbf{h}_j)}, \quad
+\mathbf{c} = \sum_{t=1}^{T} \alpha_t \mathbf{h}_t,
+\end{equation}
+where $\mathbf{x}_t \in \mathbb{R}^{72}$, $\mathbf{h}_t \in \mathbb{R}^{128}$, $\mathbf{w} \in \mathbb{R}^{128}$ is learned, and padded positions are masked with $-\infty$ before softmax. The attended representation $\mathbf{c}$ is passed through a classification head of LayerNorm $\to$ Linear(128,64) $\to$ LayerNorm $\to$ ReLU $\to$ Dropout(0.35) $\to$ Linear(64,32) $\to$ ReLU $\to$ Dropout(0.35) $\to$ Linear(32,1), producing a raw logit. Variable-length sequences use \texttt{pack\_padded\_sequence}.
+
+\textbf{MC Dropout.} Following~\cite{Gal2016}, we keep dropout active at inference for $N=50$ passes while batch/layer-norm statistics remain in eval mode:
+\begin{equation}
+\hat{p}_i = \sigma(f_{\theta_i}(\mathbf{X})),\quad
+\hat{p} = \tfrac{1}{N}\sum_{i=1}^{N}\hat{p}_i,\quad
+\hat{u} = \tfrac{1}{N}\sum_{i=1}^{N}(\hat{p}_i - \hat{p})^2.
+\end{equation}
+Variance $\hat{u}$ maps to confidence levels: \textit{High} ($\hat{u} < 0.01$), \textit{Medium} ($0.01 \leq \hat{u} < 0.05$), \textit{Low} ($\hat{u} \geq 0.05$).
+
+\textbf{Training.} The loss is \texttt{BCEWithLogitsLoss} with inverse-prevalence class weight $w_\text{pos} = n_\text{neg}/n_\text{pos}$ and label smoothing $\epsilon = 0.05$~\cite{Muller2019}. Optimization uses AdamW~\cite{Loshchilov2019} (lr $5 \times 10^{-4}$, weight decay $5 \times 10^{-3}$), a 5-epoch linear warmup followed by ReduceLROnPlateau (factor 0.5, patience 5, min $10^{-6}$), gradient-norm clipping at 1.0, up to 200 epochs with early stopping (patience 30 on validation AUROC). Feature standardization is fit on the training set only. The best-validation checkpoint is saved with its normalization statistics for reproducible inference.
+
+\textbf{Calibration.} Following Guo et al.~\cite{Guo2017}, a single scalar temperature $T$ is fitted on the validation set by minimizing NLL with L-BFGS (200 iterations), applied as $\sigma(z/T)$ at inference. Temperature scaling preserves AUROC while improving probability calibration.
+
+\subsection{Decision Support and Explanation}
+The decision engine maps risk and uncertainty onto five actions: \textsc{Escalate\_\allowbreak Immediately}, \textsc{Monitor\_\allowbreak and\_\allowbreak Prepare}, \textsc{Order\_\allowbreak Additional\_\allowbreak Tests}, \textsc{Monitor\_\allowbreak Closely}, \textsc{Continue\_\allowbreak Monitoring}, using three inputs: risk (high $\geq 0.70$, moderate $[0.40, 0.70)$, low $< 0.40$), confidence level, and physiological state. Each action carries an urgency tag (immediate/urgent/routine), a reassessment interval (15--60 minutes), and context-dependent recommended tests (e.g., lactate, blood culture, CXR). A template-based NLG module then produces up to five structured sentences covering dominant risk factors, trend summary, physiological state, uncertainty caveats when confidence is not high, and the recommended action. Optional SHAP~\cite{Lundberg2017} attributions are computed via a KernelExplainer for per-feature importance rankings.
+
+% ============================================================
+% 4. EXPERIMENTAL SETUP
+% ============================================================
+\section{Experimental Setup}
+
+\textbf{Cohort and splits.} All splits are patient-level by \texttt{subject\_id} so that all visits of a patient land in the same split. We evaluate three configurations (70/15/15, 60/10/30, 50/10/40); our primary report uses 50/10/40, yielding 129{,}134 test stays at 31.1\% admission prevalence. This ratio maximizes the test sample for statistical power while retaining sufficient data for deep-model training.
+
+\textbf{Baselines.} Three non-temporal models use the \textit{last} 60-minute-window 72-d vector per stay (matching the GRU's evaluation granularity): Logistic Regression (standardized features, balanced weights, 1000 iterations); Random Forest (500 trees, depth 20, min leaf 10, balanced weights, seed 42); XGBoost (500 rounds, depth 8, lr 0.05, subsample 0.8, colsample 0.8, inverse-prevalence weighting). Two alternative temporal architectures train on the identical sequential inputs: LSTM+Attention (hidden 128, same pooling and classification head as the GRU) and Transformer encoder (4 layers, $d_\text{model}=256$, 8 heads, FFN 512, sinusoidal positional encoding). All models share the identical train/val/test patient split per configuration.
+
+\textbf{Metrics.} AUROC (discrimination), AUPRC (useful under class imbalance), F1 at threshold 0.5, Brier score, Expected Calibration Error (ECE, 10 equal-width bins), and uncertainty-stratified AUROC.
+
+\textbf{Implementation.} PyTorch on an NVIDIA RTX 3090 (24~GB) with CUDA, \texttt{cudnn.benchmark}, bfloat16 mixed precision, TF32 matmul, and \texttt{torch.compile} in \texttt{reduce-overhead} mode. GRU batch size 512; non-temporal baselines 1024; MC-Dropout inference batch 1024; seed 42.
+
+% ============================================================
+% 5. RESULTS
+% ============================================================
+\section{Results}
+
+\subsection{Overall Performance}
+Table~\ref{tab:main} reports all six models on the 50/10/40 test set ($N=129{,}134$, 31.1\% prevalence). The MC-Dropout GRU achieves the highest discrimination (AUROC 0.770), outperforming the strongest non-temporal baseline (XGBoost, 0.752) by 1.9 percentage points and LR by 5.3~pp. The GRU also exceeds both temporal alternatives by 0.6~pp AUROC (0.770 vs.\ 0.764), with AUPRC margins of $+1.3$~pp over LSTM+Attention and $+1.0$~pp over the Transformer. Tree ensembles and LSTM achieve the best raw Brier/ECE respectively, reflecting more conservative probabilities at a small discrimination cost. Temperature scaling ($T=1.12$, fitted on validation) leaves the GRU's AUROC unchanged.
+
+\begin{table}[t]
+\caption{Model comparison on 50/10/40 test set ($N=129{,}134$, prevalence 31.1\%).}
+\label{tab:main}
+\centering\small
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Model} & \textbf{AUROC} & \textbf{AUPRC} & \textbf{F1} & \textbf{Brier} & \textbf{ECE} \\
+\midrule
+\textbf{MC-Dropout GRU (ours)} & \textbf{0.770} & \textbf{0.578} & \textbf{0.594} & 0.210 & 0.185 \\
+LSTM+Attention                 & 0.764 & 0.565 & 0.590 & 0.205 & \textbf{0.168} \\
+Transformer encoder            & 0.764 & 0.568 & 0.590 & 0.207 & 0.172 \\
+\midrule
+XGBoost                        & 0.752 & 0.553 & 0.573 & 0.197 & --- \\
+Random Forest                  & 0.745 & 0.547 & 0.554 & \textbf{0.194} & --- \\
+Logistic Regression            & 0.717 & 0.502 & 0.544 & 0.216 & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Split-Ratio Sensitivity}
+Table~\ref{tab:splits} confirms the GRU's lead over XGBoost and LR is stable across three patient-level partitions; differences across splits are dominated by test-set size (and AUROC estimator precision), not by model quality. We therefore adopt 50/10/40 as the primary reporting split.
+
+\begin{table}[h]
+\caption{Split-ratio sensitivity: AUROC on held-out test.}
+\label{tab:splits}
+\centering\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Train/Val/Test} & \textbf{N$_\text{test}$} & \textbf{GRU} & \textbf{XGB} & \textbf{LR} \\
+\midrule
+70/15/15 & 48{,}533  & \textbf{0.763} & 0.751 & 0.711 \\
+60/10/30 & 97{,}072  & \textbf{0.766} & 0.753 & 0.715 \\
+50/10/40 & 129{,}134 & \textbf{0.770} & 0.752 & 0.717 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{ROC, Calibration, and Uncertainty}
+Figure~\ref{fig:results} combines the three diagnostic plots. The ROC curve (Fig.~\ref{fig:roc}) rises smoothly above the diagonal (AUROC 0.770); at FPR = 0.2 sensitivity is $\approx$55--60\%, and at FPR = 0.4 it reaches $\approx$80\%. The reliability diagram (Fig.~\ref{fig:cal}) sits slightly below the identity at high predicted probabilities, indicating mild overconfidence typical of deep networks~\cite{Guo2017}; ECE = 0.185 before temperature scaling. The MC-Dropout variance distribution (Fig.~\ref{fig:unc}) is concentrated near zero for both admitted and discharged patients, reflecting that the model is confident on most test stays.
+
+\begin{figure}[t]
+\centering
+\begin{subfigure}[b]{0.32\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{plots/roc_curve.png}
+  \caption{ROC}\label{fig:roc}
+\end{subfigure}\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{plots/calibration.png}
+  \caption{Calibration}\label{fig:cal}
+\end{subfigure}\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+  \centering
+  \includegraphics[width=\linewidth]{plots/uncertainty_dist.png}
+  \caption{Uncertainty}\label{fig:unc}
+\end{subfigure}
+\caption{Diagnostics on the 50/10/40 test set (N=129{,}134): (a) ROC (AUC = 0.770); (b) reliability diagram (10 equal-width bins, dashed = perfect calibration); (c) MC-Dropout variance distribution stratified by admission outcome.}
+\label{fig:results}
+\end{figure}
+
+\begin{table}[h]
+\caption{Uncertainty-stratified AUROC on the 50/10/40 test set.}
+\label{tab:unc}
+\centering\small
+\begin{tabular}{lc}
+\toprule
+\textbf{Confidence level} (variance band) & \textbf{AUROC} \\
+\midrule
+High ($\hat{u} < 0.01$)                   & 0.770 \\
+Medium ($0.01 \leq \hat{u} < 0.05$)       & Insufficient samples \\
+Low ($\hat{u} \geq 0.05$)                 & Insufficient samples \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At the dropout rate (0.35) and model depth used here, the vast majority of test predictions fall into the high-confidence bucket (Table~\ref{tab:unc}), where AUROC matches the full-sample value. The medium/low buckets contain too few samples for meaningful estimation. This mass near zero, combined with the mild calibration bias, suggests that more aggressive inference-time dropout or an MC-Dropout ensemble would broaden the epistemic distribution---a direction we leave to future work.
+
+\subsection{Sample Decision Support Output}
+For a deteriorating example the pipeline emits:
+\begin{quote}\small
+\textit{``The high risk prediction is driven by heart rate (rising fast) and systolic blood pressure (falling fast). Throughout the observation window, the heart rate increases rapidly and the systolic blood pressure falls rapidly. Things continue to worsen overall. The patient must be clinically escalated now without delay.''}
+\end{quote}
+The associated structured output specifies \textsc{Escalate\_\allowbreak Immediately}, urgency immediate, 15-minute reassessment, and recommended tests \{lactate, blood culture, CXR\}. Together these give the clinician a risk estimate, its confidence, and an actionable plan---which bare probabilistic outputs cannot.
+
+\subsection{Discussion}
+The 72-dimensional context vector encodes information well beyond raw vital values: trend dynamics, physiological state, data-quality signals, and derived hemodynamic markers. The shock index is particularly informative: heart rate 100 bpm means very different things at SBP 130 versus 80 mmHg. Data-quality features let the model and the decision engine downweight predictions that lack SBP or HR. Numerically small gaps across GRU/LSTM/Transformer (0.770/0.764/0.764) suggest the context vector captures most of the learnable signal and the choice of sequential backbone is secondary; we adopt the GRU as it delivers the best discrimination with fewer parameters than both alternatives.
+
+% ============================================================
+% 6. CONCLUSION
+% ============================================================
+\section{Conclusion}
+
+We presented ED-Context-AI, an end-to-end uncertainty-aware clinical decision support system for ED admission prediction. On 129{,}134 MIMIC-IV-ED v2.2 test stays, an MC-Dropout GRU over 72-dimensional clinically engineered context vectors achieves AUROC 0.770 and AUPRC 0.578, outperforming XGBoost, Random Forest, Logistic Regression, LSTM+Attention, and a Transformer encoder. The advantage is stable across three patient-level split ratios. A rule-based engine and templated NLG module translate risk and uncertainty into a concrete urgency tag, reassessment interval, recommended tests, and a natural-language rationale. Future work includes integrating lab results and clinical notes, multitask prediction (admission, ICU transfer, length of stay), prospective multi-site evaluation, fairness analysis across subpopulations, and richer uncertainty quantifiers such as deep ensembles or evidential deep learning.
+
+% ============================================================
+% REFERENCES
+% ============================================================
+\begin{thebibliography}{00}
+
+\bibitem{Hoot2008}
+N.~R. Hoot and D.~Aronsky, ``Systematic review of emergency department crowding: Causes, effects, and solutions,'' \textit{Ann. Emerg. Med.}, vol.~52, no.~2, pp.~126--136, Aug. 2008.
+
+\bibitem{Peck2012}
+J.~S. Peck et al., ``Generalizability of a simple approach for predicting hospital admission from an emergency department,'' \textit{Acad. Emerg. Med.}, vol.~19, no.~10, pp.~1156--1163, Oct. 2012.
+
+\bibitem{Morley2018}
+C.~Morley et al., ``Emergency department crowding: A systematic review of causes, consequences and solutions,'' \textit{PLOS ONE}, vol.~13, no.~8, p.~e0203316, Aug. 2018.
+
+\bibitem{Levin2018}
+S.~Levin et al., ``Machine-learning-based electronic triage more accurately differentiates patients with respect to clinical outcomes compared with the Emergency Severity Index,'' \textit{Ann. Emerg. Med.}, vol.~71, no.~5, pp.~565--574, May 2018.
+
+\bibitem{Raita2019}
+Y.~Raita et al., ``Emergency department triage prediction of clinical outcomes using machine learning models,'' \textit{Crit. Care}, vol.~23, no.~1, p.~64, Feb. 2019.
+
+\bibitem{Hong2018}
+W.~S. Hong, A.~D. Haimovich, and R.~A. Taylor, ``Predicting hospital admission at emergency department triage using machine learning,'' \textit{PLOS ONE}, vol.~13, no.~7, p.~e0201016, Jul. 2018.
+
+\bibitem{Rajkomar2018}
+A.~Rajkomar et al., ``Scalable and accurate deep learning with electronic health records,'' \textit{npj Digit. Med.}, vol.~1, no.~1, p.~18, May 2018.
+
+\bibitem{Choi2016}
+E.~Choi, M.~T. Bahadori, A.~Schuetz, W.~F. Stewart, and J.~Sun, ``Doctor AI: Predicting clinical events via recurrent neural networks,'' in \textit{Proc. MLHC}, 2016, pp.~301--318.
+
+\bibitem{Cho2014}
+K.~Cho et al., ``Learning phrase representations using RNN encoder-decoder for statistical machine translation,'' in \textit{Proc. EMNLP}, 2014, pp.~1724--1734.
+
+\bibitem{Begoli2019}
+E.~Begoli, T.~Bhatt, and D.~Galyardt, ``The need for uncertainty quantification in machine-assisted medical decision making,'' \textit{Nat. Mach. Intell.}, vol.~1, no.~1, pp.~20--23, Jan. 2019.
+
+\bibitem{Gal2016}
+Y.~Gal and Z.~Ghahramani, ``Dropout as a Bayesian approximation: Representing model uncertainty in deep learning,'' in \textit{Proc. ICML}, vol.~48, 2016, pp.~1050--1059.
+
+\bibitem{Guo2017}
+C.~Guo, G.~Pleiss, Y.~Sun, and K.~Q. Weinberger, ``On calibration of modern neural networks,'' in \textit{Proc. ICML}, vol.~70, 2017, pp.~1321--1330.
+
+\bibitem{Xie2022}
+F.~Xie et al., ``Benchmarking emergency department prediction models with machine learning and public electronic health records,'' \textit{Sci. Data}, vol.~9, no.~1, p.~658, Oct. 2022.
+
+\bibitem{Moreno2024}
+P.~A. Moreno-S\'{a}nchez, M.~Aalto, and M.~van Gils, ``Prediction of patient flow in the emergency department using explainable artificial intelligence,'' \textit{Digit. Health}, vol.~10, p.~20552076241264194, Jul. 2024.
+
+\bibitem{Bahdanau2015}
+D.~Bahdanau, K.~Cho, and Y.~Bengio, ``Neural machine translation by jointly learning to align and translate,'' in \textit{Proc. ICLR}, 2015.
+
+\bibitem{Kaji2019}
+D.~A. Kaji et al., ``An attention based deep learning model of clinical events in the intensive care unit,'' \textit{PLOS ONE}, vol.~14, no.~2, p.~e0211057, Feb. 2019.
+
+\bibitem{Song2018}
+H.~Song, D.~Rajan, J.~J. Thiagarajan, and A.~Spanias, ``Attend and diagnose: Clinical time series analysis using attention models,'' in \textit{Proc. AAAI}, 2018, pp.~4091--4098.
+
+\bibitem{Harutyunyan2019}
+H.~Harutyunyan, H.~Khachatrian, D.~C. Kale, G.~Ver Steeg, and A.~Galstyan, ``Multitask learning and benchmarking with clinical time series data,'' \textit{Sci. Data}, vol.~6, no.~1, p.~96, Jun. 2019.
+
+\bibitem{Calderon2022}
+A.~Calderon-Ramirez et al., ``Improving uncertainty estimation with semi-supervised deep learning for COVID-19 detection using chest X-ray images,'' \textit{IEEE Access}, vol.~9, pp.~85442--85454, Jun. 2021.
+
+\bibitem{Leibig2017}
+C.~Leibig, V.~Allken, M.~S. Ayhan, P.~Berens, and S.~Wahl, ``Leveraging uncertainty estimates for predicting segmentation quality,'' \textit{Sci. Rep.}, vol.~7, no.~1, p.~17816, Dec. 2017.
+
+\bibitem{Lundberg2017}
+S.~M. Lundberg and S.-I. Lee, ``A unified approach to interpreting model predictions,'' in \textit{Proc. NeurIPS}, 2017, pp.~4768--4777.
+
+\bibitem{Lauritsen2020}
+S.~M. Lauritsen et al., ``Explainable artificial intelligence model to predict acute critical illness from electronic health records,'' \textit{Nat. Commun.}, vol.~11, no.~1, p.~3852, Jul. 2020.
+
+\bibitem{Johnson2023}
+A.~E.~W. Johnson et al., ``MIMIC-IV, a freely accessible electronic health record dataset,'' \textit{Sci. Data}, vol.~10, no.~1, p.~1, Jan. 2023.
+
+\bibitem{Koch2019}
+E.~Koch, A.~Lovett, T.~Nghiem, R.~A. Riggs, and M.~A. Rech, ``Shock index in the emergency department: Utility and limitations,'' \textit{Open Access Emerg. Med.}, vol.~11, pp.~179--199, Sep. 2019.
+
+\bibitem{Muller2019}
+R.~M\"{u}ller, S.~Kornblith, and G.~E. Hinton, ``When does label smoothing help?,'' in \textit{Proc. NeurIPS}, 2019, pp.~4694--4703.
+
+\bibitem{Loshchilov2019}
+I.~Loshchilov and F.~Hutter, ``Decoupled weight decay regularization,'' in \textit{Proc. ICLR}, 2019.
+
+\end{thebibliography}
+
+\end{document}
